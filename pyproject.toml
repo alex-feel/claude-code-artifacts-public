@@ -1,0 +1,165 @@
+[project]
+name = "claude-code-artifacts"
+version = "1.0.0"
+description = "Claude Code Artifacts — pre-built library with Claude Code enhancements: subagents, hooks, output styles, custom slash commands, system prompts, and environments."
+readme = "README.md"
+authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
+requires-python = ">=3.12"
+
+dependencies = [
+    "pyyaml>=6.0.2",
+    "pydantic>=2.10.3",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0.1",
+    "mypy>=1.13.0",
+]
+
+[tool.ruff]
+# Enable preview features
+preview = true
+# General settings
+src = ["scripts", "hooks"]
+target-version = "py312"
+line-length = 127
+
+[tool.ruff.lint]
+# Enable rule groups
+select = [
+    "FAST",  # FastAPI
+    "YTT",  # flake8-2020
+    "ANN",  # flake8-annotations
+    "ASYNC",  # flake8-async
+    "B",  # flake8-bugbear
+    "COM",  # flake8-commas
+    "C4",  # flake8-comprehensions
+    "DTZ",  # flake8-datetimez
+    "T10",  # flake8-debugger
+    "EXE",  # flake8-executable
+    "FIX",  # flake8-fix-me
+    "FA",  # flake8-future-annotations
+    "INT",  # flake8-gettext
+    "ISC",  # flake8-implicit-str-concat
+    "ICN",  # flake8-import-conventions
+    "LOG",  # flake8-logging
+    "PIE",  # flake8-pie
+    "PYI",  # flake8-pyi
+    "PT",  # flake8-pytest-style
+    "Q",  # flake8-quotes
+    "RSE",  # flake8-raise
+    "RET",  # flake8-return
+    "SIM",  # flake8-simplify
+    "SLOT",  # flake8-slots
+    "TID",  # flake8-tidy-imports
+    # "TC",  # flake8-type-checking
+    "ARG",  # flake8-unused-arguments
+    "FLY",  # flynt
+    "I",  # isort
+    "NPY",  # NumPy-specific rules
+    "PD",  # pandas-vet
+    "N",  # pep8-naming
+    "PERF",  # Perflint
+    "E", "W",  # pycodestyle
+    "DOC",  # pydoclint
+    "F",  # Pyflakes
+    "PGH",  # pygrep-hooks
+    "UP",  # pyupgrade
+    "FURB",  # refurb
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+ignore-fully-untyped = true
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+inline-quotes = "single"
+multiline-quotes = "single"
+
+[tool.ruff.lint.flake8-type-checking]
+quote-annotations = true
+strict = false
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = true
+
+[tool.mypy]
+# Core safety, balanced for production
+python_version = '3.12'
+files = ['scripts', 'hooks']
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_any_explicit = false
+disallow_any_unimported = true
+
+# None and Optional handling
+no_implicit_optional = true
+
+# Warnings that catch real bugs
+warn_return_any = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_ignores = true
+warn_unused_configs = true
+
+# Cleaner public APIs and safer comparisons
+implicit_reexport = false
+strict_equality = true
+
+# Error message quality
+show_error_codes = true
+pretty = true
+
+# Encourage precise ignores and common correctness checks
+enable_error_code = [
+  'ignore-without-code',
+  'unused-awaitable',
+  'possibly-undefined',
+  'truthy-bool',
+  'truthy-iterable',
+  'redundant-expr',
+  'explicit-override'
+]
+
+# Pydantic v2 plugin for better type inference on models and validators
+plugins = ['pydantic.mypy']
+
+# Skip common noise and respect .gitignore
+exclude_gitignore = true
+exclude = '''(?x)(
+  ^\.venv/
+| ^\.tox/
+| ^\.mypy_cache/
+| ^\.pytest_cache/
+| ^build/
+| ^dist/
+| ^node_modules/
+| ^site-packages/
+)'''
+
+# Silence auto-generated migrations
+[[tool.mypy.overrides]]
+module = ['migrations.*']
+ignore_errors = true
+
+[tool.pyright]
+include = ["scripts", "hooks"]
+exclude = [".venv", "**/__pycache__"]
+# Set a sane global baseline; strictness is then scoped below.
+typeCheckingMode = "standard"
+
+# Let Ruff handle these:
+reportUnusedImport = "none"
+reportUnusedVariable = "none"
+reportUnnecessaryTypeIgnoreComment = "none"
+
+# Make dirs strict
+strict = ["scripts", "hooks"]
