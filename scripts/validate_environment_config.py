@@ -14,10 +14,8 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-# Add parent directory to path so we can import models
-sys.path.insert(0, str(Path(__file__).parent))
-
-from models.environment_config import EnvironmentConfig
+# Import from local models module
+from scripts.models.environment_config import EnvironmentConfig
 
 
 def validate_config_file(config_path: Path) -> tuple[bool, list[str]]:
@@ -29,7 +27,7 @@ def validate_config_file(config_path: Path) -> tuple[bool, list[str]]:
     Returns:
         tuple[bool, list[str]]: (is_valid, error_messages)
     """
-    errors = []
+    errors: list[str] = []
 
     # Check if file exists
     if not config_path.exists():
@@ -51,7 +49,7 @@ def validate_config_file(config_path: Path) -> tuple[bool, list[str]]:
         config = EnvironmentConfig(**content)
 
         # Additional semantic validations
-        warnings = []
+        warnings: list[str] = []
 
         # Check for referenced files (local paths only, URLs are checked at runtime)
         if not str(config_path).startswith('http'):
@@ -167,7 +165,7 @@ def validate_directory(directory: Path) -> tuple[int, int]:
     return valid_count, invalid_count
 
 
-def main():
+def main() -> None:
     """Main validation entry point."""
     parser = argparse.ArgumentParser(
         description='Validate Claude Code environment configuration files',

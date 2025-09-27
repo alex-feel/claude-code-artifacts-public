@@ -84,7 +84,7 @@ Please complete the following before stopping:
 This ensures your work is documented and preserved for future reference. Ultrathink.'''
 
 
-def main():
+def main() -> None:
     """Main hook execution function."""
     try:
         # Read input from stdin

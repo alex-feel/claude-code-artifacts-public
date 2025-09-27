@@ -41,8 +41,8 @@ class HookEvent(BaseModel):
 
 class Hooks(BaseModel):
     """Hooks configuration."""
-    files: list[str] = Field(default_factory=list, description='Hook script files to download')
-    events: list[HookEvent] = Field(default_factory=list, description='Hook event configurations')
+    files: list[str] = Field(default_factory=lambda: [], description='Hook script files to download')
+    events: list[HookEvent] = Field(default_factory=lambda: [], description='Hook event configurations')
 
 
 class Permissions(BaseModel):
@@ -84,17 +84,17 @@ class EnvironmentConfig(BaseModel):
     command_name: str | None = Field(None, alias='command-name', description='Global command name')
     base_url: str | None = Field(None, alias='base-url', description='Base URL for relative paths')
     dependencies: list[str] | None = Field(
-        default_factory=list, description='Dependencies to install',
+        default_factory=lambda: [], description='Dependencies to install',
     )
-    agents: list[str] | None = Field(default_factory=list, description='Agent markdown files')
+    agents: list[str] | None = Field(default_factory=lambda: [], description='Agent markdown files')
     mcp_servers: list[dict[str, Any]] | None = Field(
-        default_factory=list, alias='mcp-servers', description='MCP server configurations',
+        default_factory=lambda: [], alias='mcp-servers', description='MCP server configurations',
     )
     slash_commands: list[str] | None = Field(
-        default_factory=list, alias='slash-commands', description='Slash command files',
+        default_factory=lambda: [], alias='slash-commands', description='Slash command files',
     )
     output_styles: list[str] | None = Field(
-        default_factory=list, alias='output-styles', description='Output style files',
+        default_factory=lambda: [], alias='output-styles', description='Output style files',
     )
     hooks: Hooks | None = Field(None, description='Hook configurations')
     model: str | None = Field(None, description='Model configuration')
@@ -133,7 +133,7 @@ class EnvironmentConfig(BaseModel):
         if not v:
             return v
 
-        validated = []
+        validated: list[dict[str, Any]] = []
         for server in v:
             if 'name' not in server:
                 raise ValueError("MCP server must have a 'name' field")

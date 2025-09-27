@@ -17,12 +17,14 @@ import json
 import os
 import re
 import sys
+from collections.abc import Coroutine
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from typing import cast
 
 try:
-    from fastmcp import Client
+    from fastmcp import Client  # type: ignore[import-not-found]
 except ImportError:
     # FastMCP not installed, silent failure
     sys.exit(0)
@@ -36,7 +38,7 @@ class SyncMCPClient:
     context, which is required for Claude Code hooks.
     """
 
-    def __init__(self, server_command: list | str, timeout: float = 30.0) -> None:
+    def __init__(self, server_command: list[str] | str, timeout: float = 30.0) -> None:
         """
         Initialize the synchronous MCP client wrapper.
 
@@ -47,7 +49,7 @@ class SyncMCPClient:
         self.server_command = server_command
         self.timeout = timeout
 
-    def _run_async(self, coro):
+    def _run_async(self, coro: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
         """
         Run an async coroutine in a sync context.
 
@@ -86,7 +88,7 @@ class SyncMCPClient:
             The server response as a dictionary
         """
         # Create transport manually for complex commands
-        from fastmcp.client.transports import StdioTransport
+        from fastmcp.client.transports import StdioTransport  # type: ignore[import-not-found]
 
         # StdioTransport expects the command and args separately
         if isinstance(self.server_command, list):
@@ -98,13 +100,18 @@ class SyncMCPClient:
             cmd = parts[0]
             args = parts[1:] if len(parts) > 1 else []
 
-        transport = StdioTransport(cmd, args)
+        # Explicitly cast to Any to avoid type checking issues with fastmcp
+        transport = cast(Any, StdioTransport(cmd, args))
 
-        async with Client(transport) as client:
-            # Call the store_context tool on the MCP server
-            return await client.call_tool(
-                'store_context',
-                {'thread_id': thread_id, 'source': source, 'text': text},
+        # Use the client with explicit cast
+        async with cast(Any, Client(transport)) as client:
+            # Call the store_context tool on the MCP server with proper typing
+            return cast(
+                dict[str, Any],
+                await client.call_tool(
+                    'store_context',
+                    {'thread_id': thread_id, 'source': source, 'text': text},
+                ),
             )
 
     def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
@@ -178,7 +185,7 @@ def read_session_id(project_dir: str) -> str | None:
     return None
 
 
-def main():
+def main() -> None:
     """Main hook execution function."""
     try:
         # Read input from stdin

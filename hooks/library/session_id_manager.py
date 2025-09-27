@@ -15,7 +15,7 @@ from contextlib import suppress
 from pathlib import Path
 
 
-def main():
+def main() -> None:
     """Main hook execution function."""
     try:
         # Read input from stdin
@@ -73,7 +73,7 @@ def main():
         sys.exit(0)
 
 
-def append_to_previous_sessions(previous_sessions_file, session_id):
+def append_to_previous_sessions(previous_sessions_file: str, session_id: str) -> None:
     """
     Append session ID to previous sessions file and maintain max 100 entries.
 

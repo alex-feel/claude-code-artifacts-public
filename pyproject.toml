@@ -15,6 +15,11 @@ dependencies = [
 dev = [
     "pre-commit>=4.0.1",
     "mypy>=1.13.0",
+    "types-colorama>=0.4.15.20250801",
+    "types-requests>=2.32.4.20250913",
+    "types-pyyaml>=6.0.12.20250915",
+    "types-pygments>=2.19.0.20250809",
+    "types-docutils>=0.22.2.20250924",
 ]
 
 [tool.ruff]
@@ -26,6 +31,8 @@ target-version = "py312"
 line-length = 127
 
 [tool.ruff.lint]
+# Ignore specific rules
+ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Enable rule groups
 select = [
     "FAST",  # FastAPI
