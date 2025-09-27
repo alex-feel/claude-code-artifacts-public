@@ -11,6 +11,9 @@ import os
 import sys
 from pathlib import Path
 
+# Add parent directory to path to allow imports from scripts module
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import yaml
 from pydantic import ValidationError
 
