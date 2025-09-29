@@ -2,10 +2,16 @@
 """
 Session ID Manager Hook for Claude Code
 
-This hook manages session IDs by storing the current session ID and maintaining
-a history of previous session IDs for SessionStart events.
+This hook manages session IDs and communicates them to the model:
+1. For 'startup|clear' sources: Creates new session ID, manages history, and
+   outputs the new session ID to the model.
+2. For other sources: Reads existing session ID from file and outputs it to
+   the model for continuity.
 
-Trigger: SessionStart with matcher 'startup|clear'
+The session ID is always communicated to the model with guidance on how to use it
+for context management and retrieval operations.
+
+Trigger: SessionStart with any source
 """
 
 import json
@@ -30,12 +36,6 @@ def main() -> None:
         if hook_event_name != 'SessionStart':
             sys.exit(0)
 
-        if source not in ['startup', 'clear']:
-            sys.exit(0)
-
-        if not session_id:
-            sys.exit(0)
-
         # Get Claude project directory
         claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
         if not claude_project_dir:
@@ -49,22 +49,55 @@ def main() -> None:
         session_id_file = os.path.join(claude_dir, '.session_id')
         previous_sessions_file = os.path.join(claude_dir, '.previous_session_ids')
 
-        # Check if .session_id file exists
-        session_id_path = Path(session_id_file)
-        if session_id_path.exists():
-            # Read current session ID
+        # Handle based on source
+        if source in ['startup', 'clear']:
+            # New session: create/update session ID
+            if not session_id:
+                sys.exit(0)
+
+            # Check if .session_id file exists
+            session_id_path = Path(session_id_file)
+            if session_id_path.exists():
+                # Read current session ID
+                with suppress(OSError):
+                    # If we can't read the file, just continue
+                    current_session_id = session_id_path.read_text(encoding='utf-8').strip()
+
+                    if current_session_id:
+                        # Append current session ID to previous sessions
+                        append_to_previous_sessions(previous_sessions_file, current_session_id)
+
+            # Write new session ID to .session_id file
             with suppress(OSError):
-                # If we can't read the file, just continue
-                current_session_id = session_id_path.read_text(encoding='utf-8').strip()
+                # If we can't write, exit silently
+                session_id_path.write_text(session_id, encoding='utf-8')
 
-                if current_session_id:
-                    # Append current session ID to previous sessions
-                    append_to_previous_sessions(previous_sessions_file, current_session_id)
+            # Output session ID message to the model
+            context_message = (
+                f'SESSION CONTEXT: Your session ID is {session_id}.\n'
+                'This session ID is used to maintain context and continuity across your interactions. '
+                'Remember this session ID as it may be referenced in context retrieval operations.\n\n'
+                '📌 NOTE: When spawning subagents via the Task tool, include this session ID information '
+                'in the task prompt to maintain context continuity across the agent hierarchy.'
+            )
+            print(context_message)
 
-        # Write new session ID to .session_id file
-        with suppress(OSError):
-            # If we can't write, exit silently
-            session_id_path.write_text(session_id, encoding='utf-8')
+        else:
+            # Existing session: read and output current session ID
+            session_id_path = Path(session_id_file)
+            if session_id_path.exists():
+                with suppress(OSError):
+                    existing_session_id = session_id_path.read_text(encoding='utf-8').strip()
+                    if existing_session_id:
+                        # Output existing session ID message to the model
+                        context_message = (
+                            f'SESSION CONTEXT: Continuing with session ID {existing_session_id}.\n'
+                            'This session ID maintains context across your interactions. '
+                            'Use this when retrieving or storing context information.\n\n'
+                            '📌 NOTE: When spawning subagents via the Task tool, include this session ID information '
+                            'in the task prompt to maintain context continuity across the agent hierarchy.'
+                        )
+                        print(context_message)
 
         sys.exit(0)
 

@@ -12,7 +12,7 @@ Action: Guide model to include timezone and date context in task descriptions
 
 Exit Codes:
 - 0: Success (timezone context present or not a Task tool)
-- 2: Guidance provided to include timezone context (non-blocking)
+- 2: Guidance provided to include timezone context (blocking)
 """
 
 import json
@@ -21,6 +21,9 @@ import sys
 from datetime import UTC
 from datetime import datetime
 from typing import Any
+
+# Type alias for JSON-like values that can be recursively processed
+JSONValue = str | int | float | bool | None | dict[str, Any] | list[Any]
 
 
 def contains_timezone_context(text: str | None) -> bool:
@@ -42,27 +45,34 @@ def contains_timezone_context(text: str | None) -> bool:
     return bool(re.search(timezone_pattern, text, re.IGNORECASE))
 
 
-def get_task_prompt(tool_input: dict[str, Any]) -> str | None:
+def check_timezone_in_tool_input(tool_input: dict[str, Any]) -> bool:
     """
-    Extract the task prompt from tool input parameters.
+    Check if timezone context exists anywhere in the tool input.
+
+    Recursively searches through all string values in the tool_input
+    to find the timezone context phrase.
 
     Args:
         tool_input: The tool input dictionary
 
     Returns:
-        str: The task prompt or None if not found
+        bool: True if timezone context is found, False otherwise
     """
-    # Check common parameter names for task description
-    task_keys = ['prompt', 'task', 'instruction', 'description', 'message']
+    def search_for_timezone(obj: JSONValue) -> bool:
+        """Recursively search for timezone context in any string value."""
+        if isinstance(obj, str):
+            return contains_timezone_context(obj)
+        if isinstance(obj, dict):
+            for value in obj.values():
+                if search_for_timezone(value):
+                    return True
+        elif isinstance(obj, list):
+            for item in obj:
+                if search_for_timezone(item):
+                    return True
+        return False
 
-    for key in task_keys:
-        if key in tool_input:
-            value = tool_input[key]
-            if isinstance(value, str):
-                return value
-            return None
-
-    return None
+    return search_for_timezone(tool_input)
 
 
 def generate_timezone_context() -> str:
@@ -74,20 +84,34 @@ def generate_timezone_context() -> str:
     """
     # Get current timezone and date with timezone awareness
     current_time = datetime.now(tz=UTC).astimezone()
-    timezone = current_time.strftime('%Z')
+    timezone_name = current_time.strftime('%Z')
     current_date = current_time.strftime('%Y-%m-%d')
 
-    # If timezone is empty (common on some systems), try to get a fallback
-    if not timezone:
+    # Calculate UTC offset
+    utc_offset = current_time.utcoffset()
+    if utc_offset:
+        total_seconds = int(utc_offset.total_seconds())
+        hours, remainder = divmod(abs(total_seconds), 3600)
+        minutes = remainder // 60
+        sign = '+' if total_seconds >= 0 else '-'
+        offset_str = f' (UTC{sign}{hours:02d}:{minutes:02d})'
+    else:
+        offset_str = ''
+
+    # If timezone name is empty (common on some systems), try to get a fallback
+    if not timezone_name:
         try:
-            timezone = current_time.astimezone().strftime('%Z')
+            timezone_name = current_time.astimezone().strftime('%Z')
         except Exception:
-            timezone = 'Local'
+            timezone_name = 'Local'
+
+    # Combine timezone name with UTC offset
+    timezone = f'{timezone_name}{offset_str}'
 
     # Format the context message
     return (
-        f"Very important: The user's timezone is {timezone}. "
-        f"The current date is {current_date}.\n\n"
+        f"TIMEZONE CONTEXT: The user's timezone is {timezone}. "
+        f"The current date is {current_date}.\n"
         "Any dates before this are in the past, and any dates after this are in the future. "
         "When the user asks for the 'latest', 'most recent', 'today's', etc. "
         "don't assume your knowledge is up to date."
@@ -114,15 +138,8 @@ def main() -> None:
         # Extract tool input
         tool_input = input_data.get('tool_input', {})
 
-        # Get the task prompt
-        task_prompt = get_task_prompt(tool_input)
-
-        # Skip if we can't determine the task prompt
-        if not task_prompt:
-            sys.exit(0)
-
-        # Check if timezone context is already present
-        if contains_timezone_context(task_prompt):
+        # Check if timezone context is already present anywhere in the tool input
+        if check_timezone_in_tool_input(tool_input):
             # Timezone context is already present, allow the operation
             sys.exit(0)
 
@@ -141,7 +158,7 @@ def main() -> None:
 
         # Provide guidance to the model (exit code 2 for model feedback)
         print(guidance_message, file=sys.stderr)
-        sys.exit(2)  # Send feedback to Claude Code for processing
+        sys.exit(2)  # Block tool call and send feedback to Claude Code for processing
 
     except json.JSONDecodeError:
         sys.exit(0)  # Silent failure for invalid JSON
