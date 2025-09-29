@@ -53,7 +53,7 @@ def format_instruction_message(session_id: str) -> str:
     Returns:
         Formatted instruction message for stderr
     """
-    return f'''IMPORTANT! Work documentation required before stopping.
+    return f'''IMPORTANT: Work documentation required before stopping.
 
 Please complete the following before stopping:
 
@@ -68,18 +68,20 @@ Please complete the following before stopping:
    - Detailed documentation, outcomes, deliverables, etc.
    - Examples (code, etc.), URIs (URLs, etc.)
    - Other references (version numbers, filenames, entity names, lines in code, etc.)
+   - Any other information according to the work done
 
-2. Save the report using mcp__context-server__store_context with these parameters:
-   - thread_id: '{session_id}'
+2. Save the report using `mcp__context-server__store_context` tool with these parameters:
+   - thread_id: '{session_id}' (you can always re-read it from `.claude/.session_id` file in the current working directory)
    - source: 'agent'
    - text: [your complete Markdown report]
    - metadata: {{
        "agent_name": "[your agent name]",
-       "task_type": "[implementation/research/review/etc]"
+       "task_name": "[derive it from the initial task assigned to you]",
+       "completed": "[true if the task is completed in full/false if the task is not completed]"
      }}
-   - tags: ["report", "subagent:[your-name]", plus relevant content tags]
+   - tags: ["report", plus any relevant tags describing the report content]
 
-3. After successfully saving the report, do NOT pass it to the calling party, just tell that the task is done.
+3. After successfully saving the report, do NOT pass it to the calling party, just tell it that the task is completed.
 
 This ensures your work is documented and preserved for future reference. Ultrathink.'''
 
