@@ -58,6 +58,9 @@ def format_instruction_message(session_id: str) -> str:
 Please complete the following before stopping:
 
 1. Create a comprehensive Markdown report of your work results including:
+   **FIRST CHECK**: If you have a specific report format defined in your own agent instructions, USE YOUR OWN FORMAT
+   **ONLY IF NO SPECIFIC FORMAT EXISTS IN YOUR OWN INSTRUCTIONS**, use the following:
+
    ## Summary
    - Brief overview of what was accomplished
 
