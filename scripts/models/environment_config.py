@@ -5,6 +5,7 @@ Defines the schema for Claude Code environment YAML files.
 
 from typing import Any
 from typing import Literal
+from typing import cast
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -83,8 +84,14 @@ class EnvironmentConfig(BaseModel):
     name: str = Field(..., description='Display name for the environment')
     command_name: str | None = Field(None, alias='command-name', description='Global command name')
     base_url: str | None = Field(None, alias='base-url', description='Base URL for relative paths')
-    dependencies: list[str] | None = Field(
-        default_factory=lambda: [], description='Dependencies to install',
+    dependencies: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            'common': list[str](),
+            'windows': list[str](),
+            'mac': list[str](),
+            'linux': list[str](),
+        },
+        description='Platform-specific dependency commands',
     )
     agents: list[str] | None = Field(default_factory=lambda: [], description='Agent markdown files')
     mcp_servers: list[dict[str, Any]] | None = Field(
@@ -117,6 +124,53 @@ class EnvironmentConfig(BaseModel):
         if not v.startswith('claude-'):
             raise ValueError("command-name should start with 'claude-' for consistency")
         return v
+
+    @field_validator('dependencies')
+    @classmethod
+    def validate_dependencies_structure(cls, v: object) -> dict[str, list[str]]:
+        """Validate dependencies have correct structure."""
+        if v is None:
+            return {'common': [], 'windows': [], 'mac': [], 'linux': []}
+
+        if not isinstance(v, dict):
+            raise ValueError('dependencies must be a dictionary')
+
+        # Cast to dict for type checking
+        deps_dict = cast(dict[str, object], v)
+
+        valid_keys = {'common', 'windows', 'mac', 'linux'}
+        invalid_keys = set(deps_dict.keys()) - valid_keys
+
+        if invalid_keys:
+            raise ValueError(
+                f'Invalid platform keys in dependencies: {invalid_keys}. '
+                f'Valid keys are: {valid_keys}',
+            )
+
+        # Build validated result
+        result: dict[str, list[str]] = {}
+
+        # Validate each platform's dependencies
+        for platform_key in valid_keys:
+            if platform_key not in deps_dict:
+                result[platform_key] = []
+                continue
+
+            commands = deps_dict[platform_key]
+            if not isinstance(commands, list):
+                raise ValueError(f'dependencies.{platform_key} must be a list')
+
+            # Cast to list[object] for type checking
+            commands_list = cast(list[object], commands)
+            validated_commands: list[str] = []
+            for idx, cmd in enumerate(commands_list):
+                if not isinstance(cmd, str):
+                    raise ValueError(f'dependencies.{platform_key}[{idx}] must be a string')
+                validated_commands.append(cmd)
+
+            result[platform_key] = validated_commands
+
+        return result
 
     @field_validator('base_url')
     @classmethod
