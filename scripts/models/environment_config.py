@@ -17,6 +17,7 @@ from pydantic import model_validator
 
 class MCPServerHTTP(BaseModel):
     """MCP server configuration with HTTP/SSE transport."""
+
     name: str = Field(..., description='Server name')
     scope: Literal['user', 'project'] = Field('user', description='Scope of the server')
     transport: Literal['http', 'sse'] = Field(..., description='Transport type')
@@ -26,6 +27,7 @@ class MCPServerHTTP(BaseModel):
 
 class MCPServerStdio(BaseModel):
     """MCP server configuration with stdio transport."""
+
     name: str = Field(..., description='Server name')
     scope: Literal['user', 'project'] = Field('user', description='Scope of the server')
     command: str = Field(..., description='Command to execute')
@@ -34,6 +36,7 @@ class MCPServerStdio(BaseModel):
 
 class HookEvent(BaseModel):
     """Hook event configuration."""
+
     event: str = Field(..., description='Event name (e.g., PostToolUse, Notification)')
     matcher: str | None = Field('', description='Regex pattern for matching')
     type: Literal['command'] = Field('command', description='Hook type')
@@ -42,30 +45,41 @@ class HookEvent(BaseModel):
 
 class Hooks(BaseModel):
     """Hooks configuration."""
+
     files: list[str] = Field(default_factory=lambda: [], description='Hook script files to download')
     events: list[HookEvent] = Field(default_factory=lambda: [], description='Hook event configurations')
 
 
 class Permissions(BaseModel):
     """Permissions configuration."""
+
     default_mode: Literal['default', 'acceptEdits', 'plan', 'bypassPermissions'] | None = Field(
-        None, alias='defaultMode', description='Default permission mode',
+        None,
+        alias='defaultMode',
+        description='Default permission mode',
     )
     allow: list[str] | None = Field(None, description='Explicitly allowed actions')
     deny: list[str] | None = Field(None, description='Explicitly denied actions')
     ask: list[str] | None = Field(None, description='Actions requiring confirmation')
     additional_directories: list[str] | None = Field(
-        None, alias='additionalDirectories', description='Additional accessible directories',
+        None,
+        alias='additionalDirectories',
+        description='Additional accessible directories',
     )
 
 
 class CommandDefaults(BaseModel):
     """Command launch configuration."""
+
     output_style: str | None = Field(
-        None, alias='output-style', description='Default output style (replaces system prompt)',
+        None,
+        alias='output-style',
+        description='Default output style (replaces system prompt)',
     )
     system_prompt: str | None = Field(
-        None, alias='system-prompt', description='Additional system prompt (appends to default)',
+        None,
+        alias='system-prompt',
+        description='Additional system prompt (appends to default)',
     )
 
     @field_validator('output_style', 'system_prompt')
@@ -79,6 +93,7 @@ class CommandDefaults(BaseModel):
 
 class EnvironmentConfig(BaseModel):
     """Complete environment configuration model."""
+
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
     name: str = Field(..., description='Display name for the environment')
@@ -95,22 +110,37 @@ class EnvironmentConfig(BaseModel):
     )
     agents: list[str] | None = Field(default_factory=lambda: [], description='Agent markdown files')
     mcp_servers: list[dict[str, Any]] | None = Field(
-        default_factory=lambda: [], alias='mcp-servers', description='MCP server configurations',
+        default_factory=lambda: [],
+        alias='mcp-servers',
+        description='MCP server configurations',
     )
     slash_commands: list[str] | None = Field(
-        default_factory=lambda: [], alias='slash-commands', description='Slash command files',
+        default_factory=lambda: [],
+        alias='slash-commands',
+        description='Slash command files',
     )
     output_styles: list[str] | None = Field(
-        default_factory=lambda: [], alias='output-styles', description='Output style files',
+        default_factory=lambda: [],
+        alias='output-styles',
+        description='Output style files',
     )
     hooks: Hooks | None = Field(None, description='Hook configurations')
     model: str | None = Field(None, description='Model configuration')
     env_variables: dict[str, str] | None = Field(
-        None, alias='env-variables', description='Environment variables',
+        None,
+        alias='env-variables',
+        description='Environment variables',
     )
     permissions: Permissions | None = Field(None, description='Permissions configuration')
     command_defaults: CommandDefaults | None = Field(
-        None, alias='command-defaults', description='Command launch defaults',
+        None,
+        alias='command-defaults',
+        description='Command launch defaults',
+    )
+    include_co_authored_by: bool | None = Field(
+        None,
+        alias='include-co-authored-by',
+        description='Whether to include co-authored-by attribution in commits (default: True)',
     )
 
     @field_validator('command_name')
@@ -143,8 +173,7 @@ class EnvironmentConfig(BaseModel):
 
         if invalid_keys:
             raise ValueError(
-                f'Invalid platform keys in dependencies: {invalid_keys}. '
-                f'Valid keys are: {valid_keys}',
+                f'Invalid platform keys in dependencies: {invalid_keys}. Valid keys are: {valid_keys}',
             )
 
         # Build validated result
