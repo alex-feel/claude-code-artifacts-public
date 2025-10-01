@@ -3,6 +3,7 @@ Pydantic models for environment configuration validation.
 Defines the schema for Claude Code environment YAML files.
 """
 
+import re
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -142,6 +143,11 @@ class EnvironmentConfig(BaseModel):
         alias='include-co-authored-by',
         description='Whether to include co-authored-by attribution in commits (default: True)',
     )
+    claude_code_version: str | None = Field(
+        None,
+        alias='claude-code-version',
+        description='Specific Claude Code version to install (e.g., "1.0.124"). If not specified, installs latest.',
+    )
 
     @field_validator('command_name')
     @classmethod
@@ -244,6 +250,22 @@ class EnvironmentConfig(BaseModel):
         if v and not (v in valid_aliases or v.startswith('claude-')):
             raise ValueError(
                 f"model must be one of {valid_aliases} or a custom model name starting with 'claude-'",
+            )
+        return v
+
+    @field_validator('claude_code_version')
+    @classmethod
+    def validate_claude_code_version(cls, v: str | None) -> str | None:
+        """Validate Claude Code version format (semantic versioning)."""
+        if v is None:
+            return v
+
+        # Basic semantic version validation (X.Y.Z format)
+        # Pattern allows for version formats like: 1.0.0, 1.0.128, 2.1.0-beta.1, etc.
+        version_pattern = r'^(\d+)\.(\d+)\.(\d+)(?:-[\w\.\-]+)?(?:\+[\w\.\-]+)?$'
+        if not re.match(version_pattern, v):
+            raise ValueError(
+                f'claude-code-version must be a valid semantic version (e.g., "1.0.128", "2.0.0-beta.1"). Got: {v}',
             )
         return v
 
