@@ -52,7 +52,6 @@ dependencies:
         # - sudo apt-get install nodejs
 
 # Agents to include (optional)
-# Paths are relative to the repository root
 agents:
     # - agents/library/code-reviewer.md
     # - agents/library/doc-writer.md
@@ -80,13 +79,11 @@ mcp-servers:
     #   env: ENV_VAR=value  # Optional
 
 # Slash commands to include (optional)
-# Paths are relative to the repository root
 slash-commands:
     # - slash-commands/library/commit.md
     # - slash-commands/library/test.md
 
 # Output styles (optional)
-# Paths are relative to the repository root
 output-styles:
     # - output-styles/library/concise.md
 
@@ -161,5 +158,4 @@ command-defaults:
 
     # Additional system prompt (optional)
     # Use this when you want to append to Claude's default development prompt
-    # Path is relative to the repository root
     # system-prompt: system-prompts/library/your-prompt.md
