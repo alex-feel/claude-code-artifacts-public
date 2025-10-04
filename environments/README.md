@@ -45,9 +45,10 @@ base-url: https://raw.githubusercontent.com/my-org/my-configs/main
 # Or explicitly specify where {path} should go:
 # base-url: https://my-server.com/api/v2/{path}/raw
 
-# OPTIONAL: Specific Claude Code version to install (e.g., "1.0.124")
+# OPTIONAL: Specific Claude Code version to install
+# Use "latest" or a semantic version (e.g., "1.0.124", "2.0.0-beta.1")
 # If not specified, installs the latest version
-claude-code-version: "1.0.124"
+claude-code-version: "latest"  # or "1.0.124" for specific version
 
 # OPTIONAL: Include co-authored-by attribution in commits (default: true)
 include-co-authored-by: true

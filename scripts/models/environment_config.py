@@ -256,8 +256,12 @@ class EnvironmentConfig(BaseModel):
     @field_validator('claude_code_version')
     @classmethod
     def validate_claude_code_version(cls, v: str | None) -> str | None:
-        """Validate Claude Code version format (semantic versioning)."""
+        """Validate Claude Code version format (semantic versioning or 'latest')."""
         if v is None:
+            return v
+
+        # Allow 'latest' as a special value
+        if v.lower() == 'latest':
             return v
 
         # Basic semantic version validation (X.Y.Z format)
@@ -265,7 +269,8 @@ class EnvironmentConfig(BaseModel):
         version_pattern = r'^(\d+)\.(\d+)\.(\d+)(?:-[\w\.\-]+)?(?:\+[\w\.\-]+)?$'
         if not re.match(version_pattern, v):
             raise ValueError(
-                f'claude-code-version must be a valid semantic version (e.g., "1.0.128", "2.0.0-beta.1"). Got: {v}',
+                f'claude-code-version must be "latest" or a valid semantic version '
+                f'(e.g., "1.0.128", "2.0.0-beta.1"). Got: {v}',
             )
         return v
 

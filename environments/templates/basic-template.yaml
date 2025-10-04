@@ -17,10 +17,10 @@ command-name: claude-[your-env]
 # base-url: https://my-server.com/api/v2/{path}/raw
 
 # Claude Code version configuration (optional)
-# Specify a specific Claude Code version to install (e.g., "1.0.124")
+# Use "latest" or a semantic version (e.g., "1.0.124", "2.0.0-beta.1")
 # If not specified, installs the latest version
-# Use this to pin your environment to a specific Claude Code version for consistency
-# claude-code-version: "1.0.124"
+# Use semantic version to pin your environment for consistency
+# claude-code-version: "latest"  # or "1.0.124" for specific version
 
 # Git commit co-authorship configuration (optional)
 # Whether to include co-authored-by attribution in commits
