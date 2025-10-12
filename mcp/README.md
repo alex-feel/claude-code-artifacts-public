@@ -85,7 +85,7 @@ The [MCP Context Server](https://github.com/alex-feel/mcp-context-server) provid
 
 ```bash
 # Installation (all platforms)
-claude mcp add context-server -- uvx mcp-context-server
+claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
 ```
 
 This server enables agents and Claude Code to store and retrieve context information, making it useful for maintaining state across different tasks and sessions.

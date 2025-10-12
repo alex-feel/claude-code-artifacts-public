@@ -13,21 +13,86 @@ Trigger: UserPromptSubmit
 """
 
 import asyncio
+import ctypes
+import io
 import json
 import os
 import re
 import sys
+import traceback
 from collections.abc import Coroutine
 from contextlib import suppress
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from typing import cast
 
 try:
-    from fastmcp import Client  # type: ignore[import-not-found]
+    from fastmcp import Client
 except ImportError:
     # FastMCP not installed, silent failure
     sys.exit(0)
+
+
+def setup_windows_utf8() -> None:
+    """
+    Configure Windows console for UTF-8 encoding.
+
+    This ensures that subprocess communication uses UTF-8 instead of
+    Windows codepage (CP1252, Windows-1251) which corrupts non-ASCII text.
+
+    CRITICAL for handling Cyrillic, Chinese, Arabic, and other non-ASCII text.
+    Without this, non-ASCII characters stored via the hook appear as
+    garbled text (mojibake) due to Windows default codepage encoding.
+
+    This function:
+    1. Sets PYTHONUTF8=1 environment variable (Python 3.7+)
+    2. Configures Windows console codepage to UTF-8 (65001)
+
+    It is applied before any subprocess operations to ensure proper
+    encoding for FastMCP StdioTransport stdin/stdout communication.
+    """
+    if sys.platform != 'win32':
+        return
+
+    try:
+        # Set Python to UTF-8 mode (Python 3.7+)
+        # This ensures all text I/O uses UTF-8 by default
+        os.environ['PYTHONUTF8'] = '1'
+
+        # Set Windows console codepage to UTF-8 (65001)
+        # This affects stdin/stdout/stderr of spawned subprocesses
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(65001)  # Input codepage
+        kernel32.SetConsoleOutputCP(65001)  # Output codepage
+
+        log_error('UTF-8 mode configured for Windows console')
+    except Exception as e:
+        # Non-fatal: log error but continue
+        # Hook should still work even if UTF-8 setup fails
+        log_error(f'Failed to set Windows UTF-8 mode: {e}')
+
+
+def log_error(message: str) -> None:
+    """
+    Log errors to a debug file if debugging is enabled.
+
+    Uses CLAUDE_HOOK_DEBUG_FILE environment variable to specify log location.
+    If not set, logging is silently disabled.
+
+    Args:
+        message: The error message to log
+    """
+    debug_file = os.environ.get('CLAUDE_HOOK_DEBUG_FILE')
+    if debug_file:
+        try:
+            with Path(debug_file).open('a', encoding='utf-8') as f:
+                timestamp = datetime.now(tz=UTC).isoformat()
+                f.write(f'{timestamp}: {message}\n')
+        except Exception:
+            # Silent failure for logging - don't break the hook
+            pass
 
 
 class SyncMCPClient:
@@ -74,7 +139,10 @@ class SyncMCPClient:
             raise
 
     async def _store_context_async(
-        self, thread_id: str, source: str, text: str,
+        self,
+        thread_id: str,
+        source: str,
+        text: str,
     ) -> dict[str, Any]:
         """
         Store context asynchronously using the MCP server.
@@ -88,7 +156,7 @@ class SyncMCPClient:
             The server response as a dictionary
         """
         # Create transport manually for complex commands
-        from fastmcp.client.transports import StdioTransport  # type: ignore[import-not-found]
+        from fastmcp.client.transports import StdioTransport
 
         # StdioTransport expects the command and args separately
         if isinstance(self.server_command, list):
@@ -100,17 +168,28 @@ class SyncMCPClient:
             cmd = parts[0]
             args = parts[1:] if len(parts) > 1 else []
 
-        # Explicitly cast to Any to avoid type checking issues with fastmcp
-        transport = cast(Any, StdioTransport(cmd, args))
+        # Pass PYTHONUTF8=1 to subprocess via environment
+        # This ensures subprocess starts with UTF-8 mode enabled from the beginning.
+        # Setting os.environ after Python starts doesn't affect subprocess initialization.
+        env = os.environ.copy()
+        env['PYTHONUTF8'] = '1'
+
+        # Create transport with environment variables for UTF-8 encoding
+        transport = cast(Any, StdioTransport(cmd, args, env=env))
 
         # Use the client with explicit cast
         async with cast(Any, Client(transport)) as client:
+            # Normalize Windows line endings for NDJSON format
+            # Windows CRLF (\r\n) can break NDJSON message parsing on stdin/stdout.
+            # Convert all line endings to Unix format (LF) for consistent handling.
+            normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
+
             # Call the store_context tool on the MCP server with proper typing
             return cast(
                 dict[str, Any],
                 await client.call_tool(
                     'store_context',
-                    {'thread_id': thread_id, 'source': source, 'text': text},
+                    {'thread_id': thread_id, 'source': source, 'text': normalized_text},
                 ),
             )
 
@@ -144,10 +223,27 @@ def is_prebuilt_slash_command(prompt: str) -> bool:
     """
     # Set of pre-built Claude Code slash commands to skip
     prebuilt_commands = {
-        'add-dir', 'agents', 'bug', 'clear', 'compact', 'config', 'cost',
-        'doctor', 'help', 'init', 'login', 'logout', 'mcp', 'memory',
-        'model', 'permissions', 'pr_comments', 'review', 'status',
-        'terminal-setup', 'vim',
+        'add-dir',
+        'agents',
+        'bug',
+        'clear',
+        'compact',
+        'config',
+        'cost',
+        'doctor',
+        'help',
+        'init',
+        'login',
+        'logout',
+        'mcp',
+        'memory',
+        'model',
+        'permissions',
+        'pr_comments',
+        'review',
+        'status',
+        'terminal-setup',
+        'vim',
     }
 
     # Pattern to match slash commands at the start of a prompt
@@ -188,6 +284,34 @@ def read_session_id(project_dir: str) -> str | None:
 def main() -> None:
     """Main hook execution function."""
     try:
+        # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
+        # This prevents non-ASCII text corruption (mojibake) in MCP communication
+        setup_windows_utf8()
+
+        # Reconfigure stdin to UTF-8 for Git Bash compatibility
+        # Git Bash on Windows uses MinGW64/MSYS2 runtime with Unix-style locale system.
+        # Without LANG/LC_ALL exports, it defaults to Windows codepage (CP1252/Windows-1251),
+        # causing stdin pipes to corrupt UTF-8 data BEFORE Python reads it.
+        # This reconfigures the already-open stdin stream to UTF-8 encoding.
+        #
+        # Use getattr() for type-safe access to reconfigure() method (Python 3.7+)
+        # sys.stdin is typed as TextIO in stubs but is TextIOWrapper at runtime
+        reconfigure_method = getattr(sys.stdin, 'reconfigure', None)
+        if reconfigure_method is not None:
+            # Python 3.7+ has reconfigure() method on TextIOWrapper
+            try:
+                reconfigure_method(encoding='utf-8')
+                log_error('Git Bash compatibility: stdin reconfigured to UTF-8')
+            except OSError as e:
+                log_error(f'Git Bash compatibility: stdin reconfigure failed: {e}')
+        else:
+            # Fallback for Python < 3.7 or if reconfigure() not available
+            try:
+                sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+                log_error('Git Bash compatibility: stdin wrapped with UTF-8 TextIOWrapper')
+            except Exception as e:
+                log_error(f'Git Bash compatibility: stdin UTF-8 fix failed: {e}')
+
         # Read input from stdin
         input_data = json.load(sys.stdin)
 
@@ -222,15 +346,23 @@ def main() -> None:
             sys.exit(0)
 
         # Create MCP client and store context
-        with suppress(Exception):
+        try:
             # Any failure in MCP communication should be silent
             # Pass command as a list for FastMCP to properly parse
-            mcp_server_command = [
-                'uvx',
-                '--from',
-                'git+https://github.com/alex-feel/mcp-context-server',
-                'mcp-context-server',
-            ]
+            # Use PyPI package (simpler and faster than GitHub URL)
+            #
+            # CRITICAL UTF-8 REQUIREMENT:
+            # The setup_windows_utf8() function MUST be called before this point
+            # to ensure subprocess stdin/stdout use UTF-8 encoding.
+            # Without this, non-ASCII text (Cyrillic, Chinese, Arabic, etc.) gets
+            # corrupted on Windows due to codepage defaults (CP1252/Windows-1251).
+            #
+            # FastMCP's StdioTransport does not explicitly set encoding='utf-8'
+            # on subprocess pipes, so we configure it via environment variable
+            # (PYTHONUTF8=1) and console codepage (65001) instead.
+
+            # Use PyPI package (official release, simpler and faster)
+            mcp_server_command = ['uvx', 'mcp-context-server']
             client = SyncMCPClient(mcp_server_command)
 
             # Store the user prompt in the context server
@@ -240,6 +372,13 @@ def main() -> None:
                 source='user',
                 text=prompt,
             )
+            log_error('SUCCESS: Context stored successfully')
+
+        except Exception as e:
+            # Log the error for debugging, then suppress as designed
+            error_msg = f'ERROR: {type(e).__name__}: {e}\n{traceback.format_exc()}'
+            log_error(error_msg)
+            # Silent failure - don't break Claude Code workflow
 
         # Always exit successfully
         sys.exit(0)

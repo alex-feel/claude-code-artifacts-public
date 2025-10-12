@@ -15,6 +15,7 @@ dependencies = [
 dev = [
     "pre-commit>=4.0.1",
     "mypy>=1.13.0",
+    "fastmcp>=2.12.4",
     "types-colorama>=0.4.15.20250801",
     "types-requests>=2.32.4.20250913",
     "types-pyyaml>=6.0.12.20250915",
