@@ -12,6 +12,13 @@ text prompts are captured and stored.
 Trigger: UserPromptSubmit
 """
 
+# /// script
+# requires-python = "=3.12"
+# dependencies = [
+#   "fastmcp>=2.10.5",
+# ]
+# ///
+
 import asyncio
 import ctypes
 import io
@@ -19,20 +26,132 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import traceback
 from collections.abc import Coroutine
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+# Try to import FastMCP - track availability
+_fastmcp_import_error: Exception | None = None
 try:
     from fastmcp import Client
-except ImportError:
-    # FastMCP not installed, silent failure
+except ImportError as e:
+    _fastmcp_import_error = e
+    if TYPE_CHECKING:
+        from fastmcp import Client
+    else:
+
+        class _DummyClient:
+            """Dummy Client class for when FastMCP is unavailable."""
+
+        Client = _DummyClient
+
+
+# Check if logging is enabled (module-level check, executed once)
+_LOGGING_ENABLED = os.environ.get('CLAUDE_HOOK_DEBUG_ENABLED', '').lower() in ('1', 'true', 'yes')
+
+
+def _get_log_file() -> Path:
+    """
+    Get log file location with multiple fallbacks for reliability.
+
+    Fallback chain:
+    1. CLAUDE_HOOK_DEBUG_FILE environment variable
+    2. {CLAUDE_PROJECT_DIR}/.claude/.hook_debug.log
+    3. {HOME}/.claude/hook_logs/user_prompt_context_saver.log
+    4. {TEMP}/claude_hook_user_prompt_context_saver.log
+
+    Returns:
+        Path to the log file (guaranteed to return a valid path)
+    """
+    # Fallback 1: Explicit debug file location
+    if os.environ.get('CLAUDE_HOOK_DEBUG_FILE'):
+        return Path(os.environ['CLAUDE_HOOK_DEBUG_FILE'])
+
+    # Fallback 2: Project directory
+    if os.environ.get('CLAUDE_PROJECT_DIR'):
+        project_dir = Path(os.environ['CLAUDE_PROJECT_DIR'])
+        claude_dir = project_dir / '.claude'
+        try:
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            return claude_dir / '.hook_debug.log'
+        except Exception:
+            pass  # Fall through to next fallback
+
+    # Fallback 3: User home directory
+    try:
+        home = Path.home()
+        log_dir = home / '.claude' / 'hook_logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / 'user_prompt_context_saver.log'
+    except Exception:
+        pass  # Fall through to final fallback
+
+    # Fallback 4: System temp directory (always works)
+    temp_dir = Path(tempfile.gettempdir())
+    return temp_dir / 'claude_hook_user_prompt_context_saver.log'
+
+
+# Initialize log file IMMEDIATELY
+_LOG_FILE = _get_log_file()
+
+
+def log_always(message: str, level: str = 'INFO') -> None:
+    """
+    Log message with guaranteed write when logging is enabled (never raises exceptions).
+
+    Logging is CONDITIONAL based on CLAUDE_HOOK_DEBUG_ENABLED environment variable.
+    If not set or set to values other than "1", "true", "yes" → NO logs written.
+
+    This function provides conditional logging that:
+    - Only writes logs when CLAUDE_HOOK_DEBUG_ENABLED is set to "1", "true", or "yes"
+    - Never depends on CLAUDE_PROJECT_DIR environment variable
+    - Never breaks the hook (all exceptions caught silently)
+    - Uses multiple fallback locations for reliability when enabled
+    - Provides timestamp and log level for each message
+
+    Args:
+        message: The message to log
+        level: Log level (INFO, ERROR, DEBUG, etc.)
+    """
+    # Early exit if logging not enabled
+    if not _LOGGING_ENABLED:
+        return
+
+    try:
+        with _LOG_FILE.open('a', encoding='utf-8') as f:
+            timestamp = datetime.now(tz=UTC).isoformat()
+            f.write(f'{timestamp} [{level}] {message}\n')
+    except Exception:
+        # Even logging failures are silent - never break the hook
+        pass
+
+
+# Log script start IMMEDIATELY
+log_always('=' * 80)
+log_always('SCRIPT START')
+log_always(f'sys.argv: {sys.argv}')
+log_always(f'cwd: {os.getcwd()}')
+log_always(f'Python version: {sys.version}')
+log_always(f'Python executable: {sys.executable}')
+log_always(f"CLAUDE_PROJECT_DIR: {os.environ.get('CLAUDE_PROJECT_DIR', 'NOT SET')}")
+log_always(f"CLAUDE_HOOK_DEBUG_FILE: {os.environ.get('CLAUDE_HOOK_DEBUG_FILE', 'NOT SET')}")
+log_always(f'Log file location: {_LOG_FILE}')
+log_always(f'stdin isatty: {sys.stdin.isatty()}')
+
+# Check FastMCP availability
+if _fastmcp_import_error is not None:
+    log_always(f'FastMCP not available: {_fastmcp_import_error}', level='ERROR')
+    log_always('Exiting: FastMCP import failed')
     sys.exit(0)
+
+log_always('FastMCP available')
 
 
 def setup_windows_utf8() -> None:
@@ -53,7 +172,9 @@ def setup_windows_utf8() -> None:
     It is applied before any subprocess operations to ensure proper
     encoding for FastMCP StdioTransport stdin/stdout communication.
     """
+    log_always('Configuring Windows UTF-8 encoding')
     if sys.platform != 'win32':
+        log_always('Not Windows platform, skipping UTF-8 setup')
         return
 
     try:
@@ -67,11 +188,14 @@ def setup_windows_utf8() -> None:
         kernel32.SetConsoleCP(65001)  # Input codepage
         kernel32.SetConsoleOutputCP(65001)  # Output codepage
 
+        log_always('UTF-8 mode configured for Windows console')
         log_error('UTF-8 mode configured for Windows console')
     except Exception as e:
         # Non-fatal: log error but continue
         # Hook should still work even if UTF-8 setup fails
-        log_error(f'Failed to set Windows UTF-8 mode: {e}')
+        error_msg = f'Failed to set Windows UTF-8 mode: {e}'
+        log_always(error_msg, level='ERROR')
+        log_error(error_msg)
 
 
 def log_error(message: str) -> None:
@@ -81,9 +205,22 @@ def log_error(message: str) -> None:
     Uses CLAUDE_HOOK_DEBUG_FILE environment variable to specify log location.
     If not set, defaults to .claude/.hook_debug.log in the project directory.
 
+    This function is kept for backward compatibility with existing code that
+    uses it, but internally delegates to log_always for guaranteed logging.
+
+    Logging is CONDITIONAL based on CLAUDE_HOOK_DEBUG_ENABLED environment variable.
+
     Args:
         message: The error message to log
     """
+    # Use log_always for guaranteed logging
+    log_always(message, level='INFO')
+
+    # Early exit if logging not enabled
+    if not _LOGGING_ENABLED:
+        return
+
+    # Also try old logging path for compatibility
     debug_file = os.environ.get('CLAUDE_HOOK_DEBUG_FILE')
 
     # Default to project-local debug log if not specified
@@ -92,7 +229,7 @@ def log_error(message: str) -> None:
         if project_dir:
             debug_file = str(Path(project_dir) / '.claude' / '.hook_debug.log')
 
-    if debug_file:
+    if debug_file and debug_file != str(_LOG_FILE):
         try:
             with Path(debug_file).open('a', encoding='utf-8') as f:
                 timestamp = datetime.now(tz=UTC).isoformat()
@@ -109,11 +246,19 @@ def report_error(error_type: str, error_msg: str) -> None:
     Creates an error tracking file at .claude/.hook_errors with structured
     error information for troubleshooting intermittent failures.
 
+    Logging is CONDITIONAL based on CLAUDE_HOOK_DEBUG_ENABLED environment variable.
+
     Args:
         error_type: Category of error (e.g., 'UVX_FAILURE', 'SESSION_ID_READ')
         error_msg: Detailed error message
     """
-    log_error(f'{error_type}: {error_msg}')
+    full_msg = f'{error_type}: {error_msg}'
+    log_always(full_msg, level='ERROR')
+    log_error(full_msg)
+
+    # Early exit if logging not enabled
+    if not _LOGGING_ENABLED:
+        return
 
     # Track error statistics
     project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
@@ -311,6 +456,7 @@ def read_session_id(project_dir: str, max_retries: int = 3) -> str | None:
         The session ID string if found, None otherwise
     """
     session_id_file = Path(project_dir) / '.claude' / '.session_id'
+    log_always(f'Reading session ID from: {session_id_file}')
 
     if not session_id_file.exists():
         report_error('SESSION_ID_READ', 'Session ID file does not exist')
@@ -321,14 +467,15 @@ def read_session_id(project_dir: str, max_retries: int = 3) -> str | None:
             session_id = session_id_file.read_text(encoding='utf-8').strip()
             if session_id:
                 if attempt > 0:
-                    log_error(f'Session ID read succeeded on attempt {attempt + 1}/{max_retries}')
+                    log_always(f'Session ID read succeeded on attempt {attempt + 1}/{max_retries}')
+                log_always(f'Session ID: {session_id}')
                 return session_id
             report_error('SESSION_ID_READ', f'Session ID file empty (attempt {attempt + 1}/{max_retries})')
         except OSError as e:
             error_msg = f'Failed to read session ID (attempt {attempt + 1}/{max_retries}): {e}'
             if attempt < max_retries - 1:
-                log_error(error_msg)
-                time.sleep(0.1 * (2 ** attempt))  # Exponential backoff: 100ms, 200ms, 400ms
+                log_always(error_msg, level='ERROR')
+                time.sleep(0.1 * (2**attempt))  # Exponential backoff: 100ms, 200ms, 400ms
             else:
                 report_error('SESSION_ID_READ', error_msg)
 
@@ -353,6 +500,7 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
     Raises:
         RuntimeError: If all retry attempts fail
     """
+    log_always('Creating MCP client with retry logic')
     last_error: Exception | None = None
     attempts = 0
 
@@ -362,6 +510,7 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
             mcp_server_command = ['uvx', 'mcp-context-server']
             # Longer timeout for first run (package download), standard timeout for retries
             timeout = timeout_first_run if attempts == 0 else 30.0
+            log_always(f'Attempt {attempts + 1}/{max_retries}: Creating MCP client (timeout={timeout}s)')
             client = SyncMCPClient(mcp_server_command, timeout=timeout)
 
             # Test connectivity with a simple operation (will raise if connection fails)
@@ -369,7 +518,9 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
             # The connection will be tested when store_context is called
 
             if attempts > 0:
-                log_error(f'MCP client created successfully on attempt {attempts + 1}/{max_retries}')
+                log_always(f'MCP client created successfully on attempt {attempts + 1}/{max_retries}')
+            else:
+                log_always('MCP client created successfully')
 
             return client
 
@@ -382,16 +533,19 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
                 # Try offline fallback on subsequent attempts
                 if attempts > 1:
                     try:
-                        log_error(f'{error_msg}, trying offline mode')
+                        log_always(f'{error_msg}, trying offline mode')
                         mcp_server_command = ['uvx', '--offline', 'mcp-context-server']
                         client = SyncMCPClient(mcp_server_command, timeout=30.0)
-                        log_error('MCP client created successfully in offline mode')
+                        log_always('MCP client created successfully in offline mode')
                         return client
                     except Exception as offline_error:
-                        log_error(f'Offline mode failed: {type(offline_error).__name__}: {offline_error}')
+                        log_always(
+                            f'Offline mode failed: {type(offline_error).__name__}: {offline_error}',
+                            level='ERROR',
+                        )
 
                 # Exponential backoff
-                log_error(error_msg)
+                log_always(error_msg, level='ERROR')
                 sleep_time = 0.5 * (2 ** (attempts - 1))  # 0.5s, 1s, 2s
                 time.sleep(sleep_time)
             else:
@@ -406,6 +560,9 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
 
 def main() -> None:
     """Main hook execution function."""
+    log_always('Entering main() function')
+    start_time = datetime.now(tz=UTC)
+
     try:
         # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
         # This prevents non-ASCII text corruption (mojibake) in MCP communication
@@ -419,53 +576,79 @@ def main() -> None:
         #
         # Use getattr() for type-safe access to reconfigure() method (Python 3.7+)
         # sys.stdin is typed as TextIO in stubs but is TextIOWrapper at runtime
+        log_always('Reconfiguring stdin for UTF-8')
         reconfigure_method = getattr(sys.stdin, 'reconfigure', None)
         if reconfigure_method is not None:
             # Python 3.7+ has reconfigure() method on TextIOWrapper
             try:
                 reconfigure_method(encoding='utf-8')
+                log_always('stdin reconfigured to UTF-8 via reconfigure()')
                 log_error('Git Bash compatibility: stdin reconfigured to UTF-8')
             except OSError as e:
-                log_error(f'Git Bash compatibility: stdin reconfigure failed: {e}')
+                error_msg = f'stdin reconfigure failed: {e}'
+                log_always(error_msg, level='ERROR')
+                log_error(f'Git Bash compatibility: {error_msg}')
         else:
             # Fallback for Python < 3.7 or if reconfigure() not available
             try:
                 sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+                log_always('stdin wrapped with UTF-8 TextIOWrapper')
                 log_error('Git Bash compatibility: stdin wrapped with UTF-8 TextIOWrapper')
             except Exception as e:
-                log_error(f'Git Bash compatibility: stdin UTF-8 fix failed: {e}')
+                error_msg = f'stdin UTF-8 fix failed: {e}'
+                log_always(error_msg, level='ERROR')
+                log_error(f'Git Bash compatibility: {error_msg}')
 
         # Read input from stdin
-        input_data = json.load(sys.stdin)
+        log_always('Reading stdin data')
+        try:
+            input_data = json.load(sys.stdin)
+            log_always(f'stdin data keys: {list(input_data.keys())}')
+        except json.JSONDecodeError as e:
+            log_always(f'JSON decode error: {e}', level='ERROR')
+            log_always('Exiting: Invalid JSON from stdin')
+            sys.exit(0)
+        except Exception as e:
+            log_always(f'Error reading stdin: {type(e).__name__}: {e}', level='ERROR')
+            log_always('Exiting: Failed to read stdin')
+            sys.exit(0)
 
         # Extract key fields
         hook_event_name = input_data.get('hook_event_name', '')
+        log_always(f'hook_event_name: {hook_event_name}')
 
         # Validate this is a UserPromptSubmit event
         if hook_event_name != 'UserPromptSubmit':
+            log_always(f'Skipping: Event type is {hook_event_name}, not UserPromptSubmit')
             sys.exit(0)
 
         # Extract prompt from input data (UserPromptSubmit has prompt directly)
         prompt = input_data.get('prompt', '')
+        log_always(f'Prompt length: {len(prompt)} characters')
         if not prompt:
             # No prompt to save
+            log_always('Skipping: Empty prompt')
             sys.exit(0)
 
         # Check if this is a pre-built slash command that should be skipped
         if is_prebuilt_slash_command(prompt):
             # Skip pre-built slash commands
+            log_always('Skipping: Pre-built slash command detected')
             sys.exit(0)
 
         # Get Claude project directory
         claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
+        log_always(f'CLAUDE_PROJECT_DIR for context save: {claude_project_dir}')
         if not claude_project_dir:
             # No project directory, can't proceed
+            log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
             sys.exit(0)
 
         # Read session ID
         session_id = read_session_id(claude_project_dir)
         if not session_id:
             # No session ID available, can't save context
+            log_always('Exiting: No session ID available', level='ERROR')
             sys.exit(0)
 
         # Create MCP client and store context
@@ -490,25 +673,36 @@ def main() -> None:
 
             # Store the user prompt in the context server
             # Using session_id as thread_id to group prompts by session
+            log_always('Storing context in MCP server')
             client.store_context(
                 thread_id=session_id,
                 source='user',
                 text=prompt,
             )
+            log_always('SUCCESS: Context stored successfully')
             log_error('SUCCESS: Context stored successfully')
 
         except Exception as e:
             # Log the error for debugging with full traceback, then suppress as designed
             error_msg = f'{type(e).__name__}: {e}'
             full_traceback = traceback.format_exc()
+            log_always(f'MCP store failure: {error_msg}', level='ERROR')
+            log_always(f'Traceback:\n{full_traceback}', level='ERROR')
             report_error('MCP_STORE_FAILURE', f'{error_msg}\n{full_traceback}')
             # Silent failure - don't break Claude Code workflow
 
         # Always exit successfully
+        end_time = datetime.now(tz=UTC)
+        duration = (end_time - start_time).total_seconds()
+        log_always(f'Execution completed in {duration:.3f} seconds')
         sys.exit(0)
 
-    except Exception:
-        # Handle all errors silently
+    except Exception as e:
+        # Handle all errors silently but log them
+        error_msg = f'Unexpected error in main(): {type(e).__name__}: {e}'
+        full_traceback = traceback.format_exc()
+        log_always(error_msg, level='ERROR')
+        log_always(f'Traceback:\n{full_traceback}', level='ERROR')
         sys.exit(0)
 
 
