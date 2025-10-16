@@ -13,7 +13,7 @@ Trigger: UserPromptSubmit
 """
 
 # /// script
-# requires-python = "=3.12"
+# requires-python = ">=3.12,<3.13"
 # dependencies = [
 #   "fastmcp>=2.10.5",
 # ]

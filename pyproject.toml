@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Claude Code Artifacts — pre-built library with Claude Code enhancements: subagents, hooks, output styles, custom slash commands, system prompts, and environments."
 readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 
 dependencies = [
     "pyyaml>=6.0.2",
