@@ -44,6 +44,46 @@ class HookEvent(BaseModel):
     command: str = Field(..., description='Command to execute')
 
 
+class FileToDownload(BaseModel):
+    """File download/copy configuration."""
+
+    source: str = Field(..., description='URL or path to the file to download/copy')
+    dest: str = Field(..., description='Destination path where the file will be saved')
+
+    @field_validator('source', 'dest')
+    @classmethod
+    def validate_paths(cls, v: str) -> str:
+        """Validate source and destination paths for security issues.
+
+        Allows:
+        - Full URLs (http://, https://)
+        - Local absolute paths (C:\\, /, ~/...)
+        - Local relative paths (./file, ../file, file)
+        - Environment variables (%VAR%, $VAR)
+
+        Prevents:
+        - Empty paths
+        - Paths with null bytes
+
+        Args:
+            v: Path string to validate.
+
+        Returns:
+            The validated path.
+
+        Raises:
+            ValueError: If path is empty or contains null bytes.
+        """
+        if not v or not v.strip():
+            raise ValueError('Path cannot be empty')
+
+        # Check for null bytes (security risk)
+        if '\x00' in v:
+            raise ValueError('Path cannot contain null bytes')
+
+        return v
+
+
 class Hooks(BaseModel):
     """Hooks configuration."""
 
@@ -124,6 +164,11 @@ class EnvironmentConfig(BaseModel):
         default_factory=lambda: [],
         alias='output-styles',
         description='Output style files',
+    )
+    files_to_download: list[FileToDownload] | None = Field(
+        default_factory=lambda: [],
+        alias='files-to-download',
+        description='Files to download during environment setup',
     )
     hooks: Hooks | None = Field(None, description='Hook configurations')
     model: str | None = Field(None, description='Model configuration')

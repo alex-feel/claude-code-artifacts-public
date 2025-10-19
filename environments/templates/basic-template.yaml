@@ -16,19 +16,47 @@ command-name: claude-[your-env]
 # Or explicitly specify where {path} should go:
 # base-url: https://my-server.com/api/v2/{path}/raw
 
-# Claude Code version configuration (optional)
+# Optional: Claude Code version configuration
 # Use "latest" or a semantic version (e.g., "1.0.124", "2.0.0-beta.1")
 # If not specified, installs the latest version
 # Use semantic version to pin your environment for consistency
 # claude-code-version: "latest"  # or "1.0.124" for specific version
 
-# Git commit co-authorship configuration (optional)
+# Optional: Git commit co-authorship configuration
 # Whether to include co-authored-by attribution in commits
 # When true, Claude Code will add 'Co-authored-by: Claude Code <...>' to commits
 # Default: true
 # include-co-authored-by: true
 
-# Dependencies to install (optional)
+# Optional: Custom files to download/copy to specific locations
+# Downloads files from URLs or copies from local paths during environment setup
+# Supports cross-platform path expansion (~ for home, %USERPROFILE%, $HOME, etc.)
+files-to-download:
+    # Download from remote URL to specific file
+    # - source: https://example.com/config.json
+    #   dest: ~/.config/myapp/config.json
+
+    # Copy from local path (relative to this config file or absolute path)
+    # - source: ../shared/common-utils.py
+    #   dest: ~/.local/lib/utils.py
+
+    # Relative paths use base-url if provided
+    # - source: configs/settings.json
+    #   dest: ~/.config/app/settings.json
+
+    # Directory destination (filename appended automatically)
+    # - source: templates/template.md
+    #   dest: ~/.templates/
+
+    # Windows-specific path using environment variable
+    # - source: scripts/helper.ps1
+    #   dest: "%LOCALAPPDATA%\\Scripts\\helper.ps1"
+
+    # Unix-specific path using environment variable
+    # - source: scripts/helper.sh
+    #   dest: $HOME/.local/bin/helper.sh
+
+# Optional: Dependencies to install
 # Platform-specific dependency commands that run before environment setup
 dependencies:
     # Commands that run on all platforms
@@ -51,13 +79,13 @@ dependencies:
         # - sudo apt-get update
         # - sudo apt-get install nodejs
 
-# Agents to include (optional)
+# Optional: Agents to include
 agents:
     # - agents/library/code-reviewer.md
     # - agents/library/doc-writer.md
     # - agents/library/test-generator.md
 
-# MCP servers configuration (optional)
+# Optional: MCP servers configuration
 mcp-servers:
     # HTTP transport example
     # - name: server-name
@@ -78,16 +106,16 @@ mcp-servers:
     #   command: npx some-mcp-server
     #   env: ENV_VAR=value  # Optional
 
-# Slash commands to include (optional)
+# Optional: Slash commands to include
 slash-commands:
     # - slash-commands/library/commit.md
     # - slash-commands/library/test.md
 
-# Output styles (optional)
+# Optional: Output styles
 output-styles:
     # - output-styles/library/concise.md
 
-# Hooks for automatic actions (optional)
+# Optional: Hooks for automatic actions
 hooks:
     # Files to download for all hooks (listed once, used by multiple events)
     files:
@@ -107,13 +135,13 @@ hooks:
         #   type: command
         #   command: notify-send 'Claude Code' 'Task Complete'
 
-# Model configuration (optional)
+# Optional: Model configuration
 # Use one of the official aliases or a custom model name
 # Aliases: default, sonnet, opus, haiku, sonnet[1m], opusplan
 # Custom: claude-opus-4-1-20250805
 # model: opus
 
-# Environment variables (optional)
+# Optional: Claude Code environment variables
 # Sets environment variables for each Claude Code session
 env-variables:
     # BASH_DEFAULT_TIMEOUT_MS: "5000"
@@ -121,41 +149,41 @@ env-variables:
     # CLAUDE_CODE_ENABLE_TELEMETRY: "1"
     # OTEL_METRICS_EXPORTER: "otlp"
 
-# Permissions configuration (optional)
+# Optional: Permissions configuration
 # Controls how Claude Code interacts with your system
 permissions:
-    # Default permission mode (optional)
+    # Optional: Default permission mode
     # Options: default, acceptEdits, plan, bypassPermissions
     # defaultMode: acceptEdits
 
-    # Explicitly allowed actions (optional)
+    # Optional: Explicitly allowed actions
     # allow:
     #     - WebFetch
     #     - mcp__context7__resolve-library-id, mcp__context7__get-library-docs
     #     - Bash(git diff:*)
 
-    # Explicitly denied actions (optional)
+    # Optional: Explicitly denied actions
     # deny:
     #     - WebFetch
     #     - Bash(curl:*)
     #     - Read(./.env)
 
-    # Actions requiring confirmation (optional)
+    # Optional: Actions requiring confirmation
     # ask:
     #     - Bash(git push:*)
 
-    # Additional accessible directories (optional)
+    # Optional: Additional accessible directories
     # additionalDirectories:
     #     - ../docs/
     #     - /external/project/
 
 # Command launch configuration
 command-defaults:
-    # Default output style (optional)
+    # Optional: Default output style
     # References filename from 'output-styles' section above (without extension)
     # This replaces the entire system prompt with a specialized one
     # output-style: business-analyst  # Will use business-analyst.md
 
-    # Additional system prompt (optional)
+    # Optional: Additional system prompt
     # Use this when you want to append to Claude's default development prompt
     # system-prompt: system-prompts/library/your-prompt.md
