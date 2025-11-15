@@ -117,7 +117,7 @@ hooks:
 
 # OPTIONAL: Model configuration
 # Use official aliases or custom model names
-model: opus  # default, sonnet, opus, haiku, sonnet[1m], opusplan, or claude-*
+model: sonnet  # default, sonnet, opus, haiku, sonnet[1m], opusplan, or claude-*
 
 # OPTIONAL: Environment variables for Claude Code sessions
 env-variables:

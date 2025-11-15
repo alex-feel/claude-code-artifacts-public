@@ -139,7 +139,7 @@ hooks:
 # Use one of the official aliases or a custom model name
 # Aliases: default, sonnet, opus, haiku, sonnet[1m], opusplan
 # Custom: claude-opus-4-1-20250805
-# model: opus
+# model: sonnet
 
 # Optional: Claude Code environment variables
 # Sets environment variables for each Claude Code session
