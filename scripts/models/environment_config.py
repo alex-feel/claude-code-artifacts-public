@@ -11,7 +11,6 @@ from typing import cast
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
-from pydantic import ValidationInfo
 from pydantic import field_validator
 from pydantic import model_validator
 
@@ -112,23 +111,22 @@ class Permissions(BaseModel):
 class CommandDefaults(BaseModel):
     """Command launch configuration."""
 
-    output_style: str | None = Field(
-        None,
-        alias='output-style',
-        description='Default output style (replaces system prompt)',
-    )
     system_prompt: str | None = Field(
         None,
         alias='system-prompt',
-        description='Additional system prompt (appends to default)',
+        description='System prompt configuration (behavior depends on mode field)',
+    )
+    mode: Literal['append', 'replace'] = Field(
+        'replace',
+        description='System prompt mode: "append" adds to default prompt, "replace" replaces it entirely',
     )
 
-    @field_validator('output_style', 'system_prompt')
+    @field_validator('mode')
     @classmethod
-    def validate_mutual_exclusivity(cls, v: str | None, info: ValidationInfo) -> str | None:
-        """Validate that output-style and system-prompt are mutually exclusive."""
-        if info.field_name == 'system_prompt' and v is not None and info.data.get('output_style') is not None:
-            raise ValueError('output-style and system-prompt are mutually exclusive')
+    def validate_mode(cls, v: str) -> str:
+        """Validate mode field has correct value."""
+        if v not in ['append', 'replace']:
+            raise ValueError('mode must be either "append" or "replace"')
         return v
 
 
@@ -159,11 +157,6 @@ class EnvironmentConfig(BaseModel):
         default_factory=lambda: [],
         alias='slash-commands',
         description='Slash command files',
-    )
-    output_styles: list[str] | None = Field(
-        default_factory=lambda: [],
-        alias='output-styles',
-        description='Output style files',
     )
     files_to_download: list[FileToDownload] | None = Field(
         default_factory=lambda: [],
@@ -340,7 +333,7 @@ class EnvironmentConfig(BaseModel):
 
         return self
 
-    @field_validator('agents', 'slash_commands', 'output_styles')
+    @field_validator('agents', 'slash_commands')
     @classmethod
     def validate_file_paths(cls, v: list[str] | None) -> list[str] | None:
         """Validate file paths for security issues.

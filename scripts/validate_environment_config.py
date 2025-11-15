@@ -137,11 +137,6 @@ def validate_config_file(config_path: Path) -> tuple[bool, list[str]]:
                 for cmd in config.slash_commands:
                     check_local_file(cmd, 'slash command')
 
-            # Check output styles exist
-            if config.output_styles:
-                for style in config.output_styles:
-                    check_local_file(style, 'output style')
-
             # Check hook files exist
             if config.hooks and config.hooks.files:
                 for hook_file in config.hooks.files:
