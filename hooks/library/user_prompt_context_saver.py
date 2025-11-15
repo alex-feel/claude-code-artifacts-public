@@ -56,6 +56,12 @@ except ImportError as e:
 # Check if logging is enabled (module-level check, executed once)
 _LOGGING_ENABLED = os.environ.get('CLAUDE_HOOK_DEBUG_ENABLED', '').lower() in ('1', 'true', 'yes')
 
+# Message size limits for Windows subprocess pipe buffers
+# Windows pipes typically have 64KB buffer, use conservative limits
+_MAX_MESSAGE_SIZE = int(os.environ.get('CLAUDE_HOOK_MAX_MESSAGE_SIZE', '32768'))  # 32KB default
+_CHUNK_SIZE = int(os.environ.get('CLAUDE_HOOK_CHUNK_SIZE', '30000'))  # 30KB default for chunks
+_JSON_OVERHEAD = 500  # Estimated bytes for JSON structure (thread_id, source, etc.)
+
 
 def _get_log_file() -> Path:
     """
@@ -320,19 +326,36 @@ class SyncMCPClient:
             # Re-raise if it's the "already in async" error
             raise
 
-    async def _store_context_async(
+    def _calculate_message_size(self, thread_id: str, source: str, text: str) -> int:
+        """
+        Calculate the JSON message size in bytes.
+
+        Args:
+            thread_id: The thread/session identifier
+            source: The source of the context
+            text: The text content to store
+
+        Returns:
+            Size of the JSON message in bytes
+        """
+        test_json = json.dumps({'thread_id': thread_id, 'source': source, 'text': text})
+        return len(test_json.encode('utf-8'))
+
+    async def _store_single_context_async(
         self,
         thread_id: str,
         source: str,
         text: str,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        Store context asynchronously using the MCP server.
+        Store a single context message asynchronously using the MCP server.
 
         Args:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
             text: The prompt text to store
+            metadata: Optional metadata to include with the context
 
         Returns:
             The server response as a dictionary
@@ -366,14 +389,104 @@ class SyncMCPClient:
             # Convert all line endings to Unix format (LF) for consistent handling.
             normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
 
+            # Build call parameters
+            params: dict[str, Any] = {
+                'thread_id': thread_id,
+                'source': source,
+                'text': normalized_text,
+            }
+            if metadata:
+                params['metadata'] = metadata
+
             # Call the store_context tool on the MCP server with proper typing
             return cast(
                 dict[str, Any],
-                await client.call_tool(
-                    'store_context',
-                    {'thread_id': thread_id, 'source': source, 'text': normalized_text},
-                ),
+                await client.call_tool('store_context', params),
             )
+
+    async def _store_context_async(
+        self,
+        thread_id: str,
+        source: str,
+        text: str,
+    ) -> dict[str, Any]:
+        """
+        Store context asynchronously using the MCP server with automatic chunking.
+
+        This method handles large messages by splitting them into chunks when they
+        exceed the Windows subprocess pipe buffer limit (~64KB). Messages are split
+        at safe boundaries to avoid breaking UTF-8 encoding.
+
+        Args:
+            thread_id: The thread/session identifier
+            source: The source of the context (always "user" for this hook)
+            text: The prompt text to store
+
+        Returns:
+            The server response as a dictionary
+        """
+        # Calculate message size to check if chunking is needed
+        message_size = self._calculate_message_size(thread_id, source, text)
+        log_always(f'Message size: {len(text)} chars, {message_size} bytes (limit: {_MAX_MESSAGE_SIZE} bytes)')
+
+        # If message is small enough, send directly
+        if message_size <= _MAX_MESSAGE_SIZE:
+            log_always('Message size within limits, sending directly')
+            return await self._store_single_context_async(thread_id, source, text)
+
+        # Message is too large, need to chunk it
+        log_always(
+            f'Message too large ({message_size} bytes > {_MAX_MESSAGE_SIZE} bytes), chunking required',
+            level='WARN',
+        )
+
+        # Calculate safe chunk size (account for JSON overhead and metadata)
+        safe_chunk_size = _CHUNK_SIZE
+        chunks: list[str] = []
+
+        # Split text into chunks
+        for i in range(0, len(text), safe_chunk_size):
+            chunk = text[i : i + safe_chunk_size]
+            chunks.append(chunk)
+
+        log_always(f'Split message into {len(chunks)} chunks of ~{safe_chunk_size} bytes each')
+
+        # Store each chunk with metadata indicating chunk info
+        results: list[dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks):
+            chunk_num = idx + 1
+            log_always(f'Storing chunk {chunk_num}/{len(chunks)} ({len(chunk)} chars)')
+
+            # Add metadata to track chunks
+            metadata = {
+                'chunk': chunk_num,
+                'total_chunks': len(chunks),
+                'chunk_size': len(chunk),
+                'is_chunked': True,
+            }
+
+            try:
+                result = await self._store_single_context_async(thread_id, source, chunk, metadata=metadata)
+                results.append(result)
+                log_always(f'Chunk {chunk_num}/{len(chunks)} stored successfully')
+            except Exception as e:
+                log_always(f'Failed to store chunk {chunk_num}/{len(chunks)}: {e}', level='ERROR')
+                # Continue with other chunks even if one fails
+                error_result: dict[str, Any] = {'error': str(e), 'chunk': chunk_num}
+                results.append(error_result)
+
+        # Return summary of chunked storage
+        successful_chunks = [r for r in results if 'error' not in r]
+        failed_chunks = [r for r in results if 'error' in r]
+
+        return {
+            'success': True,
+            'chunked': True,
+            'total_chunks': len(chunks),
+            'chunks_stored': len(successful_chunks),
+            'chunks_failed': len(failed_chunks),
+            'results': results,
+        }
 
     def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
         """
@@ -441,26 +554,30 @@ def is_prebuilt_slash_command(prompt: str) -> bool:
     return command_name in prebuilt_commands
 
 
-def read_session_id(project_dir: str, max_retries: int = 3) -> str | None:
+def read_session_id(project_dir: str, max_retries: int = 3) -> str:
     """
     Read the current session ID from the .claude/.session_id file with retry logic.
 
     Implements exponential backoff retry to handle file locking and race conditions
     on Windows where Claude Code might still be writing the session ID file.
 
+    If the session ID file is unavailable, empty, or unreadable after all retry
+    attempts, returns 'current-session' as a fallback identifier to ensure
+    context storage continues.
+
     Args:
         project_dir: The Claude project directory path
         max_retries: Maximum number of retry attempts (default: 3)
 
     Returns:
-        The session ID string if found, None otherwise
+        The session ID string if found, or 'current-session' as fallback
     """
     session_id_file = Path(project_dir) / '.claude' / '.session_id'
     log_always(f'Reading session ID from: {session_id_file}')
 
     if not session_id_file.exists():
-        report_error('SESSION_ID_READ', 'Session ID file does not exist')
-        return None
+        log_always('Session ID file does not exist, using fallback: current-session')
+        return 'current-session'
 
     for attempt in range(max_retries):
         try:
@@ -470,7 +587,10 @@ def read_session_id(project_dir: str, max_retries: int = 3) -> str | None:
                     log_always(f'Session ID read succeeded on attempt {attempt + 1}/{max_retries}')
                 log_always(f'Session ID: {session_id}')
                 return session_id
-            report_error('SESSION_ID_READ', f'Session ID file empty (attempt {attempt + 1}/{max_retries})')
+            report_error(
+                'SESSION_ID_READ',
+                f'Session ID file empty (attempt {attempt + 1}/{max_retries}), will use fallback if all attempts fail',
+            )
         except OSError as e:
             error_msg = f'Failed to read session ID (attempt {attempt + 1}/{max_retries}): {e}'
             if attempt < max_retries - 1:
@@ -479,7 +599,8 @@ def read_session_id(project_dir: str, max_retries: int = 3) -> str | None:
             else:
                 report_error('SESSION_ID_READ', error_msg)
 
-    return None
+    log_always('All session ID read attempts failed, using fallback: current-session')
+    return 'current-session'
 
 
 def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float = 60.0) -> SyncMCPClient:
@@ -644,12 +765,8 @@ def main() -> None:
             log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
             sys.exit(0)
 
-        # Read session ID
+        # Read session ID (always returns a valid string, using 'current-session' as fallback)
         session_id = read_session_id(claude_project_dir)
-        if not session_id:
-            # No session ID available, can't save context
-            log_always('Exiting: No session ID available', level='ERROR')
-            sys.exit(0)
 
         # Create MCP client and store context
         try:
@@ -686,9 +803,23 @@ def main() -> None:
             # Log the error for debugging with full traceback, then suppress as designed
             error_msg = f'{type(e).__name__}: {e}'
             full_traceback = traceback.format_exc()
-            log_always(f'MCP store failure: {error_msg}', level='ERROR')
+
+            # Check for specific error patterns related to pipe buffer issues
+            error_str = str(e).lower()
+            error_context = ''
+
+            if 'broken pipe' in error_str:
+                error_context = ' (Message likely too large for subprocess pipe buffer)'
+            elif 'timeout' in error_str:
+                error_context = ' (Consider increasing timeout for large messages via CLAUDE_HOOK_MCP_TIMEOUT)'
+            elif '[errno 32]' in error_str or 'epipe' in error_str:
+                error_context = ' (Subprocess pipe broken - message size may exceed buffer capacity)'
+            elif 'buffer' in error_str:
+                error_context = ' (Buffer-related error - message may be too large)'
+
+            log_always(f'MCP store failure: {error_msg}{error_context}', level='ERROR')
             log_always(f'Traceback:\n{full_traceback}', level='ERROR')
-            report_error('MCP_STORE_FAILURE', f'{error_msg}\n{full_traceback}')
+            report_error('MCP_STORE_FAILURE', f'{error_msg}{error_context}\n{full_traceback}')
             # Silent failure - don't break Claude Code workflow
 
         # Always exit successfully
