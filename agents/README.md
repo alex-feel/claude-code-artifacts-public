@@ -78,7 +78,7 @@ Common tool configurations used by actual agents:
 - **Analysis-only** (code-reviewer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput`
 - **Content creation** (doc-writer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch`
 - **Full development** (test-generator, refactoring): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash`
-- **Research-focused** (implementation-guide): Includes `mcp__context7__resolve-library-id, mcp__context7__get-library-docs` for library documentation access
+- **Research-focused** (implementation-guide): Includes `mcp__context7__resolve-library-id, mcp__context7__get-library-docs, mcp__deepwiki__read_wiki_structure, mcp__deepwiki__read_wiki_contents, mcp__deepwiki__ask_question` for accessing library and repository documentation
 
 **CRITICAL**: Always start with no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput), then add others as needed.
 
@@ -94,7 +94,12 @@ Example allowing all Context7 tools:
 tools: Glob, Grep, LS, Read, NotebookRead, mcp__context7__resolve-library-id, mcp__context7__get-library-docs
 ```
 
-This is equivalent to listing all Context7 tools individually but is more concise and maintainable.
+Example allowing all DeepWiki tools:
+```yaml
+tools: Glob, Grep, LS, Read, NotebookRead, mcp__deepwiki__read_wiki_structure, mcp__deepwiki__read_wiki_contents, mcp__deepwiki__ask_question
+```
+
+This is equivalent to listing all tools individually but is more concise and maintainable.
 
 ## Documentation
 

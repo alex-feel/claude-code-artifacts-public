@@ -160,6 +160,7 @@ permissions:
     # allow:
     #     - WebFetch
     #     - mcp__context7__resolve-library-id, mcp__context7__get-library-docs
+    #     - mcp__deepwiki__read_wiki_structure, mcp__deepwiki__read_wiki_contents, mcp__deepwiki__ask_question
     #     - Bash(git diff:*)
 
     # Optional: Explicitly denied actions
