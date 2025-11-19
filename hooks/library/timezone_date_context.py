@@ -9,6 +9,7 @@ context when handling date-related queries.
 Trigger: SessionStart with any source (no source restrictions)
 """
 
+import io
 import json
 import sys
 from datetime import UTC
@@ -17,6 +18,19 @@ from datetime import datetime
 
 def main() -> None:
     """Main hook execution function."""
+    # Force UTF-8 encoding for stdout/stderr to ensure proper character display
+    # This is critical on Windows systems where the default encoding (cp1251, etc.)
+    # can cause garbled output when timezone names contain non-ASCII characters
+    try:
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True,
+        )
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True,
+        )
+    except Exception:
+        pass  # Continue even if encoding reconfiguration fails
+
     try:
         # Read input from stdin
         input_data = json.load(sys.stdin)
