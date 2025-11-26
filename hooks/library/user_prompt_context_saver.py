@@ -195,13 +195,11 @@ def setup_windows_utf8() -> None:
         kernel32.SetConsoleOutputCP(65001)  # Output codepage
 
         log_always('UTF-8 mode configured for Windows console')
-        log_error('UTF-8 mode configured for Windows console')
     except Exception as e:
         # Non-fatal: log error but continue
         # Hook should still work even if UTF-8 setup fails
         error_msg = f'Failed to set Windows UTF-8 mode: {e}'
         log_always(error_msg, level='ERROR')
-        log_error(error_msg)
 
 
 def log_error(message: str) -> None:
@@ -260,7 +258,6 @@ def report_error(error_type: str, error_msg: str) -> None:
     """
     full_msg = f'{error_type}: {error_msg}'
     log_always(full_msg, level='ERROR')
-    log_error(full_msg)
 
     # Early exit if logging not enabled
     if not _LOGGING_ENABLED:
@@ -627,8 +624,12 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
 
     while attempts < max_retries:
         try:
-            # Use standard uvx command
-            mcp_server_command = ['uvx', 'mcp-context-server']
+            # Use uvx with semantic-search extra for embedding support
+            # The [semantic-search] extra includes required dependencies:
+            # - ollama client for embedding generation
+            # - numpy for vector operations
+            # - sqlite-vec for vector similarity search
+            mcp_server_command = ['uvx', '--with', 'mcp-context-server[semantic-search]', 'mcp-context-server']
             # Longer timeout for first run (package download), standard timeout for retries
             timeout = timeout_first_run if attempts == 0 else 30.0
             log_always(f'Attempt {attempts + 1}/{max_retries}: Creating MCP client (timeout={timeout}s)')
@@ -655,7 +656,14 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
                 if attempts > 1:
                     try:
                         log_always(f'{error_msg}, trying offline mode')
-                        mcp_server_command = ['uvx', '--offline', 'mcp-context-server']
+                        # Use offline mode with semantic-search extra (requires prior uvx cache)
+                        mcp_server_command = [
+                            'uvx',
+                            '--with',
+                            'mcp-context-server[semantic-search]',
+                            '--offline',
+                            'mcp-context-server',
+                        ]
                         client = SyncMCPClient(mcp_server_command, timeout=30.0)
                         log_always('MCP client created successfully in offline mode')
                         return client
@@ -797,7 +805,6 @@ def main() -> None:
                 text=prompt,
             )
             log_always('SUCCESS: Context stored successfully')
-            log_error('SUCCESS: Context stored successfully')
 
         except Exception as e:
             # Log the error for debugging with full traceback, then suppress as designed
