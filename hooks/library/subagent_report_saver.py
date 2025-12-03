@@ -16,77 +16,21 @@ Exit Codes:
 """
 
 import json
-import os
 import sys
-from pathlib import Path
 
 
-def read_session_id() -> str | None:
-    """
-    Read the current session ID from the .claude/.session_id file.
-
-    Returns:
-        The session ID string if found, None otherwise
-    """
-    project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
-    if not project_dir:
-        return None
-
-    session_id_file = Path(project_dir) / '.claude' / '.session_id'
-    if not session_id_file.exists():
-        return None
-
-    try:
-        session_id = session_id_file.read_text(encoding='utf-8').strip()
-        return session_id or None
-    except Exception:
-        return None
-
-
-def format_instruction_message(session_id: str) -> str:
+def format_instruction_message() -> str:
     """
     Format the instruction message for the agent.
-
-    Args:
-        session_id: The current session ID
 
     Returns:
         Formatted instruction message for stderr
     """
-    return f'''IMPORTANT: Work documentation required before stopping.
+    return '''FRIENDLY REMAINDER: Work documentation required before stopping.
 
-Please complete the following before stopping:
+If you have already stored your work report, you may stop.
 
-1. Create a comprehensive Markdown report of your work results including:
-   **FIRST CHECK**: If you have a specific report format defined in your own agent instructions, USE YOUR OWN FORMAT
-   **ONLY IF NO SPECIFIC FORMAT EXISTS IN YOUR OWN INSTRUCTIONS**, use the following:
-
-   ## Summary
-   - Brief overview of what was accomplished
-
-   ## Work Performed
-   - Detailed list of all tasks completed
-
-   ## Results Achieved
-   - Detailed documentation, outcomes, deliverables, etc.
-   - Examples (code, etc.), URIs (URLs, etc.)
-   - Other references (version numbers, filenames, entity names, lines in code, etc.)
-   - Any other information according to the work done
-
-2. Save the report using `mcp__context-server__store_context` tool with these parameters:
-   - thread_id: '{session_id}' (you can always re-read it from `.claude/.session_id` file in the current working directory)
-   - source: 'agent'
-   - text: [your complete Markdown report]
-   - metadata: {{
-       "agent_name": "[your agent name]",
-       "task_name": "[derive it from the initial task assigned to you]",
-       "completed": "[true if the task is completed in full/false if the task is not completed]"
-     }}
-   - tags: ["report", plus any relevant tags describing the report content]
-
-3. After successfully saving the report, do NOT pass it to the calling party, just tell it that the task is completed.
-
-This ensures your work is documented and preserved for future reference. Ultrathink.'''
+Otherwise, follow your instructions on context preservation.'''
 
 
 def main() -> None:
@@ -107,15 +51,8 @@ def main() -> None:
             # Hook is already active, allow stop to prevent loops
             sys.exit(0)
 
-        # Read session ID for the report storage
-        session_id = read_session_id()
-        if not session_id:
-            # No session ID available, can't instruct proper storage
-            # Still block with generic instructions
-            session_id = 'current-session'
-
         # Format and output the instruction message
-        instruction = format_instruction_message(session_id)
+        instruction = format_instruction_message()
         print(instruction, file=sys.stderr)
 
         # Exit with code 2 to block the stop and deliver instructions
