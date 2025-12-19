@@ -28,9 +28,11 @@ def format_instruction_message() -> str:
     """
     return '''FRIENDLY REMAINDER: Work documentation required before stopping.
 
-If you have already stored your work report, you may stop.
+If you have already stored your work report, do NOT save it again — just stop.
 
-Otherwise, follow your instructions on context preservation.'''
+Otherwise, follow your instructions/skills on context preservation.
+
+If you don't have any instructions/skills on context preservation, do NOT save any report — just stop.'''
 
 
 def main() -> None:
