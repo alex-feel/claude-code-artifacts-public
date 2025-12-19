@@ -83,6 +83,57 @@ class FileToDownload(BaseModel):
         return v
 
 
+class Skill(BaseModel):
+    """Skill configuration for Claude Code skills installation."""
+
+    name: str = Field(..., min_length=1, description='Skill name/identifier')
+    base: str = Field(..., min_length=1, description='Base URL or local path for skill files')
+    files: list[str] = Field(..., min_length=1, description='List of files to download/copy')
+
+    @field_validator('base')
+    @classmethod
+    def validate_base_path(cls, v: str) -> str:
+        """Validate base path for security issues.
+
+        Args:
+            v: Base path string to validate.
+
+        Returns:
+            The validated base path.
+
+        Raises:
+            ValueError: If base path is empty or contains null bytes.
+        """
+        if not v or not v.strip():
+            raise ValueError('base cannot be empty')
+        if '\x00' in v:
+            raise ValueError('base cannot contain null bytes')
+        return v
+
+    @field_validator('files')
+    @classmethod
+    def validate_files_list(cls, v: list[str]) -> list[str]:
+        """Validate files list contains SKILL.md and no empty entries.
+
+        Args:
+            v: List of file paths to validate.
+
+        Returns:
+            The validated list of file paths.
+
+        Raises:
+            ValueError: If SKILL.md is missing, or any file is empty/contains null bytes.
+        """
+        if 'SKILL.md' not in v:
+            raise ValueError('SKILL.md is required in the files list for every skill')
+        for i, file_path in enumerate(v):
+            if not file_path or not file_path.strip():
+                raise ValueError(f'files[{i}] cannot be empty')
+            if '\x00' in file_path:
+                raise ValueError(f'files[{i}] cannot contain null bytes')
+        return v
+
+
 class Hooks(BaseModel):
     """Hooks configuration."""
 
@@ -157,6 +208,10 @@ class EnvironmentConfig(BaseModel):
         default_factory=lambda: [],
         alias='slash-commands',
         description='Slash command files',
+    )
+    skills: list[Skill] | None = Field(
+        default_factory=lambda: [],
+        description='Skill configurations for Claude Code skills',
     )
     files_to_download: list[FileToDownload] | None = Field(
         default_factory=lambda: [],

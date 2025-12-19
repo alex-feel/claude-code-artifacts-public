@@ -288,7 +288,7 @@ class SyncMCPClient:
     context, which is required for Claude Code hooks.
     """
 
-    def __init__(self, server_command: list[str] | str, timeout: float = 30.0) -> None:
+    def __init__(self, server_command: list[str] | str, timeout: float = 60.0) -> None:
         """
         Initialize the synchronous MCP client wrapper.
 
@@ -629,9 +629,16 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
             # - ollama client for embedding generation
             # - numpy for vector operations
             # - sqlite-vec for vector similarity search
-            mcp_server_command = ['uvx', '--with', 'mcp-context-server[semantic-search]', 'mcp-context-server']
+            mcp_server_command = [
+                'uvx',
+                '--python',
+                '3.12',
+                '--with',
+                'mcp-context-server[semantic-search]',
+                'mcp-context-server',
+            ]
             # Longer timeout for first run (package download), standard timeout for retries
-            timeout = timeout_first_run if attempts == 0 else 30.0
+            timeout = timeout_first_run if attempts == 0 else 60.0
             log_always(f'Attempt {attempts + 1}/{max_retries}: Creating MCP client (timeout={timeout}s)')
             client = SyncMCPClient(mcp_server_command, timeout=timeout)
 
@@ -659,12 +666,14 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
                         # Use offline mode with semantic-search extra (requires prior uvx cache)
                         mcp_server_command = [
                             'uvx',
+                            '--python',
+                            '3.12',
                             '--with',
                             'mcp-context-server[semantic-search]',
                             '--offline',
                             'mcp-context-server',
                         ]
-                        client = SyncMCPClient(mcp_server_command, timeout=30.0)
+                        client = SyncMCPClient(mcp_server_command, timeout=60.0)
                         log_always('MCP client created successfully in offline mode')
                         return client
                     except Exception as offline_error:
