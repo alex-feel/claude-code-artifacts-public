@@ -2,7 +2,7 @@
 """
 Claude Code Hook: Restrict File Operations to Current Working Directory
 
-This hook prevents Edit, MultiEdit, and Write operations from modifying files
+This hook prevents Edit and Write operations from modifying files
 outside the current working directory. The hook dynamically determines the CWD
 at runtime using Path.cwd(), making it portable and reusable across any project.
 
@@ -10,8 +10,8 @@ This ensures Claude Code operations remain within the project boundaries and
 prevents accidental modifications to files in parent directories or other locations.
 
 Event: PreToolUse
-Matcher: Edit|MultiEdit|Write
-Target: File operations (Edit, MultiEdit, Write)
+Matcher: Edit|Write
+Target: File operations (Edit, Write)
 Action: Block operations targeting files outside the dynamically determined CWD
 """
 
@@ -98,8 +98,8 @@ def check_file_operation(tool_data: dict[str, Any], cwd: Path) -> tuple[bool, st
     tool_name = tool_data.get('tool_name', '')
     tool_input = tool_data.get('tool_input', {})
 
-    # Only process Edit, MultiEdit, and Write tools
-    if tool_name not in ['Edit', 'Write', 'MultiEdit']:
+    # Only process Edit and Write tools
+    if tool_name not in ['Edit', 'Write']:
         return False, ''
 
     # Extract file path from tool input
@@ -151,7 +151,7 @@ def main() -> None:
         if hook_event_name != 'PreToolUse':
             sys.exit(0)
 
-        if tool_name not in ['Edit', 'MultiEdit', 'Write']:
+        if tool_name not in ['Edit', 'Write']:
             sys.exit(0)
 
         # Get current working directory dynamically at runtime

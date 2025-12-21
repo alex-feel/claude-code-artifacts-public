@@ -126,7 +126,7 @@ hooks:
     events:
         # Example: Run linter on file changes
         # - event: PostToolUse
-        #   matcher: Edit|MultiEdit|Write  # Regex pattern
+        #   matcher: Edit|Write  # Regex pattern
         #   type: command
         #   command: your-script.py  # Reference the filename from 'files' section above
 

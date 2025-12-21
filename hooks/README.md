@@ -18,7 +18,7 @@ Hooks are scripts that automatically run in response to specific events in Claud
        - hooks/library/<your-hook>.py
      events:
        - event: PostToolUse
-         matcher: Edit|MultiEdit|Write
+         matcher: Edit|Write
          type: command
          command: <your-hook>.py
    ```
@@ -30,7 +30,7 @@ Hooks are scripts that automatically run in response to specific events in Claud
      "hooks": {
        "PostToolUse": [
          {
-           "matcher": "Edit|MultiEdit|Write",
+           "matcher": "Edit|Write",
            "hooks": [
              {
                "type": "command",
@@ -76,7 +76,7 @@ sys.exit(0)
 ### Event Data Structure
 
 Each event receives JSON data via stdin containing:
-- `tool_name`: The tool that was used (Write, Edit, MultiEdit, etc.)
+- `tool_name`: The tool that was used (Write, Edit, etc.)
 - `tool_input`: Input parameters passed to the tool
 - `tool_response`: Response from the tool execution
 
@@ -118,7 +118,7 @@ hooks:
 ### Matcher Patterns
 
 The `matcher` field supports regex patterns to filter when hooks run:
-- `Edit|MultiEdit|Write` - Run on any file edit
+- `Edit|Write` - Run on any file edit
 - `\.py$` - Run only for Python files
 - `test_.*\.js$` - Run only for JavaScript test files
 - `\.md$` - Run only for Markdown files
