@@ -237,6 +237,11 @@ class EnvironmentConfig(BaseModel):
         alias='include-co-authored-by',
         description='Whether to include co-authored-by attribution in commits (default: True)',
     )
+    always_thinking_enabled: bool | None = Field(
+        None,
+        alias='always-thinking-enabled',
+        description='Whether to enable always-on thinking mode for extended reasoning (default: False)',
+    )
     claude_code_version: str | None = Field(
         None,
         alias='claude-code-version',
