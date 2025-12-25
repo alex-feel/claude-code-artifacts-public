@@ -242,6 +242,17 @@ class EnvironmentConfig(BaseModel):
         alias='claude-code-version',
         description='Specific Claude Code version to install (e.g., "1.0.124"). If not specified, installs latest.',
     )
+    inherit: str | None = Field(
+        None,
+        description='URL or path to parent configuration to inherit from. '
+        'Supports full URLs, local paths, or repository config names.',
+    )
+    os_env_variables: dict[str, str | None] | None = Field(
+        None,
+        alias='os-env-variables',
+        description='OS-level persistent environment variables. '
+        'Set value to null to delete the variable.',
+    )
 
     @field_validator('command_name')
     @classmethod
@@ -366,6 +377,62 @@ class EnvironmentConfig(BaseModel):
                 f'claude-code-version must be "latest" or a valid semantic version '
                 f'(e.g., "1.0.128", "2.0.0-beta.1"). Got: {v}',
             )
+        return v
+
+    @field_validator('inherit')
+    @classmethod
+    def validate_inherit(cls, v: str | None) -> str | None:
+        """Validate inherit path or URL format.
+
+        Args:
+            v: Inherit path/URL string to validate.
+
+        Returns:
+            The validated inherit value.
+
+        Raises:
+            ValueError: If inherit path is empty or contains null bytes.
+        """
+        if v is None:
+            return v
+
+        if not v or not v.strip():
+            raise ValueError('inherit cannot be empty string')
+
+        if '\x00' in v:
+            raise ValueError('inherit cannot contain null bytes')
+
+        return v
+
+    @field_validator('os_env_variables')
+    @classmethod
+    def validate_os_env_variables(cls, v: dict[str, str | None] | None) -> dict[str, str | None] | None:
+        """Validate OS environment variables configuration.
+
+        Args:
+            v: Dictionary of environment variable names to values.
+
+        Returns:
+            The validated dictionary.
+
+        Raises:
+            ValueError: If variable names are invalid or values contain null bytes.
+        """
+        if v is None:
+            return v
+
+        env_var_pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+        for name, value in v.items():
+            if not env_var_pattern.match(name):
+                raise ValueError(
+                    f'Invalid environment variable name: {name}. '
+                    'Must start with letter or underscore, followed by letters, digits, or underscores.',
+                )
+
+            if value is not None and '\x00' in str(value):
+                raise ValueError(f'Environment variable {name} value cannot contain null bytes')
+
         return v
 
     @model_validator(mode='after')
