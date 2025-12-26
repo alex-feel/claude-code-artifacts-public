@@ -9,7 +9,6 @@ context when handling date-related queries.
 Trigger: SessionStart with any source (no source restrictions)
 """
 
-import io
 import json
 import sys
 from datetime import UTC
@@ -18,19 +17,6 @@ from datetime import datetime
 
 def main() -> None:
     """Main hook execution function."""
-    # Force UTF-8 encoding for stdout/stderr to ensure proper character display
-    # This is critical on Windows systems where the default encoding (cp1251, etc.)
-    # can cause garbled output when timezone names contain non-ASCII characters
-    try:
-        sys.stdout = io.TextIOWrapper(
-            sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True,
-        )
-        sys.stderr = io.TextIOWrapper(
-            sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True,
-        )
-    except Exception:
-        pass  # Continue even if encoding reconfiguration fails
-
     try:
         # Read input from stdin
         input_data = json.load(sys.stdin)
@@ -44,8 +30,15 @@ def main() -> None:
 
         # Get current timezone and date with timezone awareness
         current_time = datetime.now(tz=UTC).astimezone()
-        timezone_name = current_time.strftime('%Z')
         current_date = current_time.strftime('%Y-%m-%d')
+
+        # Get timezone name with safe ASCII fallback to avoid stdout encoding issues
+        try:
+            timezone_name = current_time.strftime('%Z')
+            if not timezone_name or not timezone_name.isascii():
+                timezone_name = 'Local'
+        except Exception:
+            timezone_name = 'Local'
 
         # Calculate UTC offset
         utc_offset = current_time.utcoffset()
@@ -57,14 +50,6 @@ def main() -> None:
             offset_str = f' (UTC{sign}{hours:02d}:{minutes:02d})'
         else:
             offset_str = ''
-
-        # If timezone name is empty (common on some systems), try to get a fallback
-        if not timezone_name:
-            # Try to get timezone from astimezone()
-            try:
-                timezone_name = current_time.astimezone().strftime('%Z')
-            except Exception:
-                timezone_name = 'Local'
 
         # Combine timezone name with UTC offset
         timezone = f'{timezone_name}{offset_str}'
