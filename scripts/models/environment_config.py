@@ -242,6 +242,11 @@ class EnvironmentConfig(BaseModel):
         alias='always-thinking-enabled',
         description='Whether to enable always-on thinking mode for extended reasoning (default: False)',
     )
+    install_nodejs: bool | None = Field(
+        None,
+        alias='install-nodejs',
+        description='Whether to install Node.js LTS before processing dependencies (default: False)',
+    )
     claude_code_version: str | None = Field(
         None,
         alias='claude-code-version',
