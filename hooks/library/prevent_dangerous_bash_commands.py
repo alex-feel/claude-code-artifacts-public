@@ -15,7 +15,112 @@ Action: Block operations containing dangerous command patterns
 """
 
 import json
+import re
 import sys
+
+# Inline script interpreter patterns for detecting code execution
+INLINE_SCRIPT_PATTERNS: list[tuple[str, str]] = [
+    # Python with -c flag
+    (r'python(?:3(?:\.\d+)?)?(?:\.exe)?\s+(?:-\w\s+)*-c\s+', 'python'),
+    (r'py(?:\.exe)?\s+(?:-\w\s+)*-c\s+', 'python'),
+    # Node.js with -e/--eval flag
+    (r'node(?:js)?(?:\.exe)?\s+(?:-\w\s+)*-e\s+', 'node'),
+    (r'node(?:js)?(?:\.exe)?\s+(?:-\w\s+)*--eval\s+', 'node'),
+    # Ruby with -e flag
+    (r'ruby(?:\.exe)?\s+(?:-\w\s+)*-e\s+', 'ruby'),
+    # Perl with -e flag
+    (r'perl(?:\.exe)?\s+(?:-\w\s+)*-e\s+', 'perl'),
+]
+
+# Dangerous patterns within inline code for each interpreter
+DANGEROUS_CODE_PATTERNS: dict[str, list[str]] = {
+    'python': [
+        r'os\.system\s*\(',
+        r'subprocess\.(run|call|Popen|check_output|check_call)\s*\(',
+        r'os\.popen\s*\(',
+        r'commands\.(getoutput|getstatusoutput)\s*\(',
+        r'eval\s*\(',
+        r'exec\s*\(',
+        r'__import__\s*\(',
+    ],
+    'node': [
+        r'child_process',
+        r'execSync\s*\(',
+        r'spawnSync\s*\(',
+        r'exec\s*\(',
+        r'spawn\s*\(',
+        r'eval\s*\(',
+    ],
+    'ruby': [
+        r'\bsystem\s*\(',
+        r'\bexec\s*\(',
+        r'`[^`]+`',
+        r'%x\{',
+        r'Open3\.',
+    ],
+    'perl': [
+        r'\bsystem\s*\(',
+        r'\bexec\s*\(',
+        r'`[^`]+`',
+        r'qx\{',
+    ],
+}
+
+
+def check_inline_script_execution(command: str) -> tuple[bool, str, str]:
+    """
+    Check for dangerous inline script execution patterns.
+
+    Detects when script interpreters (python, node, ruby, perl) are used with
+    inline code flags (-c, -e) and the code contains dangerous patterns like
+    os.system(), subprocess.run(), etc.
+
+    Args:
+        command: The bash command to check
+
+    Returns:
+        tuple: (is_dangerous, interpreter, matched_pattern)
+    """
+    if not command:
+        return False, '', ''
+
+    # Check each inline script pattern
+    for pattern, interpreter in INLINE_SCRIPT_PATTERNS:
+        match = re.search(pattern, command, re.IGNORECASE)
+        if not match:
+            continue
+
+        # Extract the code portion after the flag
+        code_start = match.end()
+        remaining = command[code_start:]
+
+        # Try to extract quoted code first
+        code = ''
+        if remaining.startswith('"'):
+            end_quote = remaining.find('"', 1)
+            if end_quote > 0:
+                code = remaining[1:end_quote]
+        elif remaining.startswith("'"):
+            end_quote = remaining.find("'", 1)
+            if end_quote > 0:
+                code = remaining[1:end_quote]
+        else:
+            # Take until separator or end
+            code_match = re.match(r'^([^\s;|&]+)', remaining)
+            if code_match:
+                code = code_match.group(1)
+
+        if not code:
+            code = remaining
+
+        # Check for dangerous patterns in the extracted code
+        dangerous_patterns = DANGEROUS_CODE_PATTERNS.get(interpreter, [])
+        for danger_pattern in dangerous_patterns:
+            if re.search(danger_pattern, code, re.IGNORECASE):
+                return True, interpreter, danger_pattern
+
+    return False, '', ''
+
 
 # COMPREHENSIVE LIST OF DANGEROUS BASH COMMANDS
 # Organized by category for maintainability
@@ -286,6 +391,25 @@ def main() -> None:
 
             print(error_message, file=sys.stderr)
             sys.exit(2)  # block action and send feedback for Claude Code
+
+        # Check for inline script execution with dangerous code patterns
+        is_inline_dangerous, interpreter, danger_pattern = check_inline_script_execution(command)
+
+        if is_inline_dangerous:
+            error_message = (
+                f'BLOCKED: Dangerous inline script execution detected.\n\n'
+                f'Interpreter: {interpreter}\n'
+                f'Dangerous pattern: {danger_pattern}\n\n'
+                f'Inline script execution with commands that spawn shells or execute\n'
+                f'system commands is prohibited for security reasons.\n\n'
+                f'Command attempted: {command[:200]}'
+            )
+
+            if len(command) > 200:
+                error_message += '...'
+
+            print(error_message, file=sys.stderr)
+            sys.exit(2)
 
         # Command is safe, allow execution
         sys.exit(0)
