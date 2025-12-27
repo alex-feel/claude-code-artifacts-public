@@ -61,8 +61,9 @@ def main() -> None:
             "Any dates before this are in the past, and any dates after this are in the future. "
             "When the user asks for the 'latest', 'most recent', 'today's', etc. "
             "don't assume your knowledge is up to date.\n\n"
-            "NOTE: When spawning subagents via the Task tool, include this timezone and date information "
-            "in the task prompt to ensure temporal context consistency across the agent hierarchy."
+            "CRITICAL: When spawning subagents via the Task tool, you MUST include the EXACT format above "
+            "(starting with 'TIMEZONE CONTEXT: The user's timezone is...'). "
+            "Do NOT condense or reformat - the phrase 'The user's timezone is' is required for validation."
         )
 
         print(context_message)

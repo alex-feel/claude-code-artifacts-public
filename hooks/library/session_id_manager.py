@@ -74,10 +74,10 @@ def main() -> None:
 
             # Output session ID message to the model
             context_message = (
-                f'SESSION CONTEXT: Your session ID is {session_id}.\n'
+                f'SESSION CONTEXT: Session ID is {session_id}.\n'
                 'This session ID is used to maintain context and continuity across your interactions. '
                 'Remember this session ID as it may be referenced in context retrieval operations.\n\n'
-                'NOTE: When spawning subagents via the Task tool, include this session ID information '
+                f'CRITICAL: When spawning subagents via the Task tool, include this session ID ({session_id}) '
                 'in the task prompt to maintain context continuity across the agent hierarchy.'
             )
             print(context_message)
@@ -91,11 +91,12 @@ def main() -> None:
                     if existing_session_id:
                         # Output existing session ID message to the model
                         context_message = (
-                            f'SESSION CONTEXT: Continuing with session ID {existing_session_id}.\n'
+                            f'SESSION CONTEXT: Session ID is {existing_session_id}.\n'
                             'This session ID maintains context across your interactions. '
                             'Use this when retrieving or storing context information.\n\n'
-                            'NOTE: When spawning subagents via the Task tool, include this session ID information '
-                            'in the task prompt to maintain context continuity across the agent hierarchy.'
+                            'CRITICAL: When spawning subagents via the Task tool, include this session ID '
+                            f'({existing_session_id}) in the task prompt to maintain context continuity '
+                            'across the agent hierarchy.'
                         )
                         print(context_message)
 
