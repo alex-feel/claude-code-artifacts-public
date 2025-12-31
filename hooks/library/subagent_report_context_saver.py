@@ -26,7 +26,7 @@ def format_instruction_message() -> str:
     Returns:
         Formatted instruction message for stderr
     """
-    return '''FRIENDLY REMAINDER: Work documentation required before stopping.
+    return '''FRIENDLY REMINDER: Work documentation required before stopping.
 
 If you have already stored your work report, do NOT save it again — just stop.
 
