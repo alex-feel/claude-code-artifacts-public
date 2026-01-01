@@ -7,12 +7,38 @@ import re
 from typing import Any
 from typing import Literal
 from typing import cast
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
+
+
+def _extract_basename(path_or_url: str) -> str:
+    """Extract the basename from a URL or file path.
+
+    Handles:
+    - Full URLs: https://example.com/path/to/script.py -> script.py
+    - Windows paths: C:\\Users\\script.py -> script.py
+    - Unix paths: /home/user/script.py -> script.py
+    - Plain filenames: script.py -> script.py
+
+    Args:
+        path_or_url: The URL or path to extract basename from.
+
+    Returns:
+        The basename (filename) without path components.
+    """
+    # Handle URLs by extracting path component
+    if path_or_url.startswith(('http://', 'https://')):
+        parsed = urlparse(path_or_url)
+        path_or_url = parsed.path
+
+    # Split on both / and \ to handle all cases
+    parts = path_or_url.replace('\\', '/').split('/')
+    return parts[-1] if parts else path_or_url
 
 
 class MCPServerHTTP(BaseModel):
@@ -502,6 +528,73 @@ class EnvironmentConfig(BaseModel):
             raise ValueError(
                 'command-defaults requires command-names to be specified. '
                 'Either provide both command-names and command-defaults, or omit both.',
+            )
+
+        return self
+
+    @model_validator(mode='after')
+    def validate_hooks_files_consistency(self) -> 'EnvironmentConfig':
+        """Validate that hooks files, events, and status-line are consistent.
+
+        Ensures:
+        1. Each file in hooks.files is used somewhere (events or status-line)
+        2. Each file referenced in hooks.events exists in hooks.files
+        3. The status-line.file (if configured) exists in hooks.files
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If hooks files consistency rules are violated.
+        """
+        # Skip validation if hooks is not configured
+        if self.hooks is None:
+            # If status_line is configured but hooks is None, that's an error
+            if self.status_line is not None:
+                raise ValueError(
+                    f'status-line.file "{self.status_line.file}" requires hooks.files to be configured. '
+                    'Add the status-line script to hooks.files.',
+                )
+            return self
+
+        # Build set of available file basenames from hooks.files
+        available_files: set[str] = set()
+        for file_path in self.hooks.files:
+            basename = _extract_basename(file_path)
+            if basename:
+                available_files.add(basename)
+
+        # Track which files are used
+        used_files: set[str] = set()
+
+        # Rule 2: Check that each event command exists in hooks.files
+        for event in self.hooks.events:
+            command_file = event.command.strip()
+            if command_file:
+                if command_file not in available_files:
+                    raise ValueError(
+                        f'hooks.events command "{command_file}" not found in hooks.files. '
+                        f'Available files: {sorted(available_files) if available_files else "none"}',
+                    )
+                used_files.add(command_file)
+
+        # Rule 3: Check that status-line.file exists in hooks.files
+        if self.status_line is not None:
+            status_file = self.status_line.file.strip()
+            if status_file:
+                if status_file not in available_files:
+                    raise ValueError(
+                        f'status-line.file "{status_file}" not found in hooks.files. '
+                        f'Available files: {sorted(available_files) if available_files else "none"}',
+                    )
+                used_files.add(status_file)
+
+        # Rule 1: Check that each file in hooks.files is used somewhere
+        unused_files = available_files - used_files
+        if unused_files:
+            raise ValueError(
+                f'hooks.files contains unused files: {sorted(unused_files)}. '
+                'Each file must be referenced by a hook event or status-line.',
             )
 
         return self
