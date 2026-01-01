@@ -135,6 +135,30 @@ class Skill(BaseModel):
         return v
 
 
+class Attribution(BaseModel):
+    """Attribution configuration for commits and PRs."""
+
+    commit: str | None = Field(None, description='Custom attribution string for commits. Empty string hides attribution.')
+    pr: str | None = Field(None, description='Custom attribution string for PRs. Empty string hides attribution.')
+
+
+class StatusLine(BaseModel):
+    """Status line configuration for custom status display."""
+
+    file: str = Field(..., description='Script file path to download to ~/.claude/hooks/')
+    padding: int | None = Field(None, description='Optional padding value for the status line')
+
+    @field_validator('file')
+    @classmethod
+    def validate_file(cls, v: str) -> str:
+        """Validate file path is not empty and has no null bytes."""
+        if not v or not v.strip():
+            raise ValueError('file cannot be empty')
+        if '\x00' in v:
+            raise ValueError('file cannot contain null bytes')
+        return v
+
+
 class Hooks(BaseModel):
     """Hooks configuration."""
 
@@ -188,7 +212,11 @@ class EnvironmentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
     name: str = Field(..., description='Display name for the environment')
-    command_name: str | None = Field(None, alias='command-name', description='Global command name')
+    command_names: list[str] | None = Field(
+        default_factory=lambda: [],
+        alias='command-names',
+        description='List of command names/aliases. First name is primary, others are aliases.',
+    )
     base_url: str | None = Field(None, alias='base-url', description='Base URL for relative paths')
     dependencies: dict[str, list[str]] = Field(
         default_factory=lambda: {
@@ -232,10 +260,19 @@ class EnvironmentConfig(BaseModel):
         alias='command-defaults',
         description='Command launch defaults',
     )
-    include_co_authored_by: bool | None = Field(
+    company_announcements: list[str] | None = Field(
         None,
-        alias='include-co-authored-by',
-        description='Whether to include co-authored-by attribution in commits (default: True)',
+        alias='company-announcements',
+        description='List of company announcement strings to display to users',
+    )
+    attribution: Attribution | None = Field(
+        None,
+        description='Attribution configuration for commits and PRs. Replaces deprecated include-co-authored-by.',
+    )
+    status_line: StatusLine | None = Field(
+        None,
+        alias='status-line',
+        description='Status line configuration with script file and optional padding',
     )
     always_thinking_enabled: bool | None = Field(
         None,
@@ -264,16 +301,21 @@ class EnvironmentConfig(BaseModel):
         'Set value to null to delete the variable.',
     )
 
-    @field_validator('command_name')
+    @field_validator('command_names')
     @classmethod
-    def validate_command_name(cls, v: str | None) -> str | None:
-        """Validate command name format."""
-        if v is None:
+    def validate_command_names(cls, v: list[str] | None) -> list[str] | None:
+        """Validate command names format."""
+        if not v:
             return v
-        if not v.replace('-', '').replace('_', '').isalnum():
-            raise ValueError('command-name must contain only alphanumeric characters, hyphens, and underscores')
-        if not v.startswith('claude-'):
-            raise ValueError("command-name should start with 'claude-' for consistency")
+        for i, name in enumerate(v):
+            if not name or not name.strip():
+                raise ValueError(f'command_names[{i}] cannot be empty or whitespace-only')
+            if ' ' in name:
+                raise ValueError(f'command_names[{i}] cannot contain spaces: "{name}"')
+            if not name.replace('-', '').replace('_', '').isalnum():
+                raise ValueError(
+                    f'command_names[{i}] must contain only alphanumeric characters, hyphens, and underscores: "{name}"',
+                )
         return v
 
     @field_validator('dependencies')
@@ -446,22 +488,20 @@ class EnvironmentConfig(BaseModel):
         return v
 
     @model_validator(mode='after')
-    def validate_command_name_and_defaults(self) -> 'EnvironmentConfig':
-        """Ensure command-name and command-defaults are both present or both absent."""
-        has_command_name = self.command_name is not None
+    def validate_command_names_and_defaults(self) -> 'EnvironmentConfig':
+        """Ensure command-names and command-defaults are both present or both absent."""
+        has_command_names = bool(self.command_names)  # Empty list or None is falsy
         has_command_defaults = self.command_defaults is not None
 
-        if has_command_name != has_command_defaults:
-            # XOR condition - one is present but not the other
-            if has_command_name and not has_command_defaults:
+        if has_command_names != has_command_defaults:
+            if has_command_names and not has_command_defaults:
                 raise ValueError(
-                    'command-name requires command-defaults to be specified. '
-                    'Either provide both command-name and command-defaults, or omit both.',
+                    'command-names requires command-defaults to be specified. '
+                    'Either provide both command-names and command-defaults, or omit both.',
                 )
-            # has_command_defaults and not has_command_name
             raise ValueError(
-                'command-defaults requires command-name to be specified. '
-                'Either provide both command-name and command-defaults, or omit both.',
+                'command-defaults requires command-names to be specified. '
+                'Either provide both command-names and command-defaults, or omit both.',
             )
 
         return self
