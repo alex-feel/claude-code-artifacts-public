@@ -68,6 +68,10 @@ class HookEvent(BaseModel):
     matcher: str | None = Field('', description='Regex pattern for matching')
     type: Literal['command'] = Field('command', description='Hook type')
     command: str = Field(..., description='Command to execute')
+    config: str | None = Field(
+        None,
+        description='Optional config file reference to pass as argument to hook command',
+    )
 
 
 class FileToDownload(BaseModel):
@@ -567,7 +571,7 @@ class EnvironmentConfig(BaseModel):
         # Track which files are used
         used_files: set[str] = set()
 
-        # Rule 2: Check that each event command exists in hooks.files
+        # Rule 2: Check that each event command and config exists in hooks.files
         for event in self.hooks.events:
             command_file = event.command.strip()
             if command_file:
@@ -577,6 +581,20 @@ class EnvironmentConfig(BaseModel):
                         f'Available files: {sorted(available_files) if available_files else "none"}',
                     )
                 used_files.add(command_file)
+
+            # Check config file reference if present
+            if event.config:
+                config_file = event.config.strip()
+                # Strip query parameters from config filename (same as setup_environment.py)
+                clean_config = config_file.split('?')[0] if '?' in config_file else config_file
+                config_basename = _extract_basename(clean_config)
+                if config_basename:
+                    if config_basename not in available_files:
+                        raise ValueError(
+                            f'hooks.events config "{config_file}" not found in hooks.files. '
+                            f'Available files: {sorted(available_files) if available_files else "none"}',
+                        )
+                    used_files.add(config_basename)
 
         # Rule 3: Check that status-line.file exists in hooks.files
         if self.status_line is not None:
