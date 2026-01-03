@@ -22,7 +22,6 @@ Configurations can contain:
 - **Hook scripts** that run automatically on Claude Code events
 - **Remote dependencies** downloaded from the internet
 
-
 ## Configuration Structure
 
 See details in [environment configurations](environments/templates/basic-template.yaml).
