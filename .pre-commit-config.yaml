@@ -30,6 +30,17 @@ repos:
       pass_filenames: false
       always_run: true
 
+- repo: local
+  hooks:
+    - id: validate-xml-tags
+      name: Validate XML tags in Markdown
+      language: system
+      entry: uv
+      args: ['run', '--frozen', '--group', 'dev', '--', 'python', 'scripts/validate_xml_tags.py']
+      files: ^(agents/library|skills/library|system-prompts/library|output-styles/library)/.*\.md$
+      exclude: (CLAUDE\.md|README\.md)$
+      pass_filenames: true
+
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
   hooks:
