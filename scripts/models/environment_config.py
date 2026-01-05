@@ -177,6 +177,10 @@ class StatusLine(BaseModel):
 
     file: str = Field(..., description='Script file path to download to ~/.claude/hooks/')
     padding: int | None = Field(None, description='Optional padding value for the status line')
+    config: str | None = Field(
+        None,
+        description='Optional config file reference to download and append as command argument',
+    )
 
     @field_validator('file')
     @classmethod
@@ -186,6 +190,18 @@ class StatusLine(BaseModel):
             raise ValueError('file cannot be empty')
         if '\x00' in v:
             raise ValueError('file cannot contain null bytes')
+        return v
+
+    @field_validator('config')
+    @classmethod
+    def validate_config(cls, v: str | None) -> str | None:
+        """Validate config file path if provided."""
+        if v is None:
+            return v
+        if not v or not v.strip():
+            raise ValueError('config cannot be empty when specified')
+        if '\x00' in v:
+            raise ValueError('config cannot contain null bytes')
         return v
 
 
@@ -606,6 +622,20 @@ class EnvironmentConfig(BaseModel):
                         f'Available files: {sorted(available_files) if available_files else "none"}',
                     )
                 used_files.add(status_file)
+
+            # Also check status-line.config if specified
+            if self.status_line.config:
+                config_file = self.status_line.config.strip()
+                # Strip query parameters from config filename (same as setup_environment.py)
+                clean_config = config_file.split('?')[0] if '?' in config_file else config_file
+                config_basename = _extract_basename(clean_config)
+                if config_basename:
+                    if config_basename not in available_files:
+                        raise ValueError(
+                            f'status-line.config "{config_file}" not found in hooks.files. '
+                            f'Available files: {sorted(available_files) if available_files else "none"}',
+                        )
+                    used_files.add(config_basename)
 
         # Rule 1: Check that each file in hooks.files is used somewhere
         unused_files = available_files - used_files

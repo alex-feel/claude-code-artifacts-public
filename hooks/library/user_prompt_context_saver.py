@@ -16,11 +16,13 @@ Trigger: UserPromptSubmit
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
 #   "fastmcp>=2.10.5",
+#   "pyyaml",
 # ]
 # ///
 
 import asyncio
 import ctypes
+import importlib.util
 import io
 import json
 import os
@@ -33,9 +35,22 @@ from collections.abc import Coroutine
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
+
+
+def _load_config_loader() -> ModuleType:
+    """Dynamically load hook_config_loader from the same directory."""
+    loader_path = Path(__file__).parent / 'hook_config_loader.py'
+    spec = importlib.util.spec_from_file_location('hook_config_loader', loader_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Cannot load hook_config_loader from {loader_path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # Try to import FastMCP - track availability
 _fastmcp_import_error: Exception | None = None
@@ -61,6 +76,55 @@ _LOGGING_ENABLED = os.environ.get('CLAUDE_HOOK_DEBUG_ENABLED', '').lower() in ('
 _MAX_MESSAGE_SIZE = int(os.environ.get('CLAUDE_HOOK_MAX_MESSAGE_SIZE', '32768'))  # 32KB default
 _CHUNK_SIZE = int(os.environ.get('CLAUDE_HOOK_CHUNK_SIZE', '30000'))  # 30KB default for chunks
 _JSON_OVERHEAD = 500  # Estimated bytes for JSON structure (thread_id, source, etc.)
+
+# Default configuration - used when no config file provided
+# Maintains backward compatibility with original behavior
+DEFAULT_CONFIG: dict[str, Any] = {
+    'enabled': True,
+    'prebuilt_commands': [
+        'add-dir',
+        'agents',
+        'bug',
+        'clear',
+        'compact',
+        'config',
+        'cost',
+        'doctor',
+        'help',
+        'init',
+        'login',
+        'logout',
+        'mcp',
+        'memory',
+        'model',
+        'permissions',
+        'pr_comments',
+        'review',
+        'status',
+        'terminal-setup',
+        'vim',
+    ],
+    'message_limits': {
+        'max_message_size': 32768,
+        'chunk_size': 30000,
+        'json_overhead': 500,
+    },
+    'session_id': {
+        'max_retries': 3,
+        'fallback_value': 'current-session',
+    },
+    'mcp_client': {
+        'max_retries': 3,
+        'timeout_first_run': 60.0,
+        'timeout_normal': 60.0,
+    },
+    'mcp_server': {
+        'command': 'uvx',
+        'python_version': '3.12',
+        'package': 'mcp-context-server[semantic-search]',
+        'entry_point': 'mcp-context-server',
+    },
+}
 
 
 def _get_log_file() -> Path:
@@ -500,7 +564,7 @@ class SyncMCPClient:
         return self._run_async(self._store_context_async(thread_id, source, text))
 
 
-def is_prebuilt_slash_command(prompt: str) -> bool:
+def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
     """
     Check if a prompt is a pre-built slash command that should be skipped.
 
@@ -509,34 +573,13 @@ def is_prebuilt_slash_command(prompt: str) -> bool:
 
     Args:
         prompt: The user prompt to check
+        config: Configuration dictionary with prebuilt_commands list
 
     Returns:
         True if the prompt is a pre-built slash command, False otherwise
     """
-    # Set of pre-built Claude Code slash commands to skip
-    prebuilt_commands = {
-        'add-dir',
-        'agents',
-        'bug',
-        'clear',
-        'compact',
-        'config',
-        'cost',
-        'doctor',
-        'help',
-        'init',
-        'login',
-        'logout',
-        'mcp',
-        'memory',
-        'model',
-        'permissions',
-        'pr_comments',
-        'review',
-        'status',
-        'terminal-setup',
-        'vim',
-    }
+    # Get prebuilt commands from config
+    prebuilt_commands = set(config.get('prebuilt_commands', DEFAULT_CONFIG['prebuilt_commands']))
 
     # Pattern to match slash commands at the start of a prompt
     # Matches: /command or /command with args
@@ -551,7 +594,7 @@ def is_prebuilt_slash_command(prompt: str) -> bool:
     return command_name in prebuilt_commands
 
 
-def read_session_id(project_dir: str, max_retries: int = 3) -> str:
+def read_session_id(project_dir: str, config: dict[str, Any]) -> str:
     """
     Read the current session ID from the .claude/.session_id file with retry logic.
 
@@ -559,22 +602,25 @@ def read_session_id(project_dir: str, max_retries: int = 3) -> str:
     on Windows where Claude Code might still be writing the session ID file.
 
     If the session ID file is unavailable, empty, or unreadable after all retry
-    attempts, returns 'current-session' as a fallback identifier to ensure
-    context storage continues.
+    attempts, returns fallback value from config to ensure context storage continues.
 
     Args:
         project_dir: The Claude project directory path
-        max_retries: Maximum number of retry attempts (default: 3)
+        config: Configuration dictionary with session_id settings
 
     Returns:
-        The session ID string if found, or 'current-session' as fallback
+        The session ID string if found, or fallback value from config
     """
+    session_config = config.get('session_id', DEFAULT_CONFIG['session_id'])
+    max_retries: int = session_config.get('max_retries', 3)
+    fallback_value: str = session_config.get('fallback_value', 'current-session')
+
     session_id_file = Path(project_dir) / '.claude' / '.session_id'
     log_always(f'Reading session ID from: {session_id_file}')
 
     if not session_id_file.exists():
-        log_always('Session ID file does not exist, using fallback: current-session')
-        return 'current-session'
+        log_always(f'Session ID file does not exist, using fallback: {fallback_value}')
+        return fallback_value
 
     for attempt in range(max_retries):
         try:
@@ -596,11 +642,11 @@ def read_session_id(project_dir: str, max_retries: int = 3) -> str:
             else:
                 report_error('SESSION_ID_READ', error_msg)
 
-    log_always('All session ID read attempts failed, using fallback: current-session')
-    return 'current-session'
+    log_always(f'All session ID read attempts failed, using fallback: {fallback_value}')
+    return fallback_value
 
 
-def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float = 60.0) -> SyncMCPClient:
+def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     """
     Create MCP client with retry logic and offline fallback for uvx reliability.
 
@@ -609,8 +655,7 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
     if network is unavailable.
 
     Args:
-        max_retries: Maximum number of retry attempts (default: 3)
-        timeout_first_run: Timeout for first run that may need package download (default: 60s)
+        config: Configuration dictionary with mcp_client and mcp_server settings
 
     Returns:
         Configured SyncMCPClient instance
@@ -618,6 +663,19 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
     Raises:
         RuntimeError: If all retry attempts fail
     """
+    mcp_config = config.get('mcp_client', DEFAULT_CONFIG['mcp_client'])
+    server_config = config.get('mcp_server', DEFAULT_CONFIG['mcp_server'])
+
+    max_retries: int = mcp_config.get('max_retries', 3)
+    timeout_first_run: float = mcp_config.get('timeout_first_run', 60.0)
+    timeout_normal: float = mcp_config.get('timeout_normal', 60.0)
+
+    # Build MCP server command from config
+    server_command: str = server_config.get('command', 'uvx')
+    python_version: str = server_config.get('python_version', '3.12')
+    package: str = server_config.get('package', 'mcp-context-server[semantic-search]')
+    entry_point: str = server_config.get('entry_point', 'mcp-context-server')
+
     log_always('Creating MCP client with retry logic')
     last_error: Exception | None = None
     attempts = 0
@@ -630,15 +688,15 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
             # - numpy for vector operations
             # - sqlite-vec for vector similarity search
             mcp_server_command = [
-                'uvx',
+                server_command,
                 '--python',
-                '3.12',
+                python_version,
                 '--with',
-                'mcp-context-server[semantic-search]',
-                'mcp-context-server',
+                package,
+                entry_point,
             ]
             # Longer timeout for first run (package download), standard timeout for retries
-            timeout = timeout_first_run if attempts == 0 else 60.0
+            timeout = timeout_first_run if attempts == 0 else timeout_normal
             log_always(f'Attempt {attempts + 1}/{max_retries}: Creating MCP client (timeout={timeout}s)')
             client = SyncMCPClient(mcp_server_command, timeout=timeout)
 
@@ -665,15 +723,15 @@ def create_mcp_client_with_retry(max_retries: int = 3, timeout_first_run: float 
                         log_always(f'{error_msg}, trying offline mode')
                         # Use offline mode with semantic-search extra (requires prior uvx cache)
                         mcp_server_command = [
-                            'uvx',
+                            server_command,
                             '--python',
-                            '3.12',
+                            python_version,
                             '--with',
-                            'mcp-context-server[semantic-search]',
+                            package,
                             '--offline',
-                            'mcp-context-server',
+                            entry_point,
                         ]
-                        client = SyncMCPClient(mcp_server_command, timeout=60.0)
+                        client = SyncMCPClient(mcp_server_command, timeout=timeout_normal)
                         log_always('MCP client created successfully in offline mode')
                         return client
                     except Exception as offline_error:
@@ -702,6 +760,19 @@ def main() -> None:
     start_time = datetime.now(tz=UTC)
 
     try:
+        # Load configuration (defaults merged with config file if provided)
+        try:
+            config_loader = _load_config_loader()
+            config: dict[str, Any] = config_loader.get_config_from_argv(DEFAULT_CONFIG)
+        except Exception:
+            # If config loading fails, use defaults
+            config = DEFAULT_CONFIG.copy()
+
+        # Check if hook is enabled
+        if not config.get('enabled', True):
+            log_always('Hook disabled via config, exiting')
+            sys.exit(0)
+
         # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
         # This prevents non-ASCII text corruption (mojibake) in MCP communication
         setup_windows_utf8()
@@ -769,7 +840,7 @@ def main() -> None:
             sys.exit(0)
 
         # Check if this is a pre-built slash command that should be skipped
-        if is_prebuilt_slash_command(prompt):
+        if is_prebuilt_slash_command(prompt, config):
             # Skip pre-built slash commands
             log_always('Skipping: Pre-built slash command detected')
             sys.exit(0)
@@ -782,8 +853,8 @@ def main() -> None:
             log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
             sys.exit(0)
 
-        # Read session ID (always returns a valid string, using 'current-session' as fallback)
-        session_id = read_session_id(claude_project_dir)
+        # Read session ID (always returns a valid string, using fallback from config)
+        session_id = read_session_id(claude_project_dir, config)
 
         # Create MCP client and store context
         try:
@@ -802,8 +873,7 @@ def main() -> None:
             # (PYTHONUTF8=1) and console codepage (65001) instead.
 
             # Create client with retry logic and offline fallback
-            # Longer timeout on first run to allow uvx to download package if needed
-            client = create_mcp_client_with_retry(max_retries=3, timeout_first_run=60.0)
+            client = create_mcp_client_with_retry(config)
 
             # Store the user prompt in the context server
             # Using session_id as thread_id to group prompts by session
