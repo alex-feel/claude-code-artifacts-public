@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.13.1
+  rev: v0.14.10
   hooks:
     - id: ruff-check
       name: Ruff (lint + autofix)
@@ -44,6 +44,15 @@ repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
   hooks:
+    - id: check-json
+      name: Check JSON
+      description: Verify JSON syntax
+      exclude: ^CHANGELOG\.md$
+
+    - id: check-yaml
+      name: Check YAML
+      description: Verify YAML syntax
+
     - id: end-of-file-fixer
       name: End-of-file fixer (non-Python)
       description: Ensures every *non-Python* file is empty or ends with a single newline
@@ -58,13 +67,20 @@ repos:
       name: Check shebang scripts
       description: Check that text files with a shebang are executable
 
+- repo: https://github.com/DavidAnson/markdownlint-cli2
+  rev: v0.20.0
+  hooks:
+    - id: markdownlint-cli2
+      name: Markdown Lint
+      exclude: ^CHANGELOG\.md$
+
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.8.19
+  rev: 0.9.21
   hooks:
     - id: uv-lock
       name: Make sure uv.lock file is up to date
 
 - repo: https://github.com/commitizen-tools/commitizen
-  rev: v4.9.1
+  rev: v4.11.1
   hooks:
     - id: commitizen
