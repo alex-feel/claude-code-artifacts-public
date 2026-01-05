@@ -402,6 +402,90 @@ class SyncMCPClient:
         test_json = json.dumps({'thread_id': thread_id, 'source': source, 'text': text})
         return len(test_json.encode('utf-8'))
 
+    @staticmethod
+    def _chunk_text_by_bytes(text: str, chunk_size: int) -> list[str]:
+        """
+        Split text into chunks based on byte size, respecting UTF-8 boundaries.
+
+        This method ensures that:
+        1. Each chunk is at most `chunk_size` bytes when UTF-8 encoded
+        2. No multi-byte UTF-8 characters are split mid-sequence
+        3. All chunks decode back to valid UTF-8 strings
+
+        UTF-8 encoding rules used for boundary detection:
+        - 1-byte chars (ASCII): 0xxxxxxx (0x00-0x7F)
+        - 2-byte chars: 110xxxxx 10xxxxxx
+        - 3-byte chars: 1110xxxx 10xxxxxx 10xxxxxx
+        - 4-byte chars: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+        - Continuation bytes: 10xxxxxx (0x80-0xBF)
+
+        Args:
+            text: The text to split into chunks
+            chunk_size: Maximum size in bytes for each chunk
+
+        Returns:
+            List of text chunks, each at most `chunk_size` bytes when encoded
+        """
+        if not text:
+            return []
+
+        text_bytes = text.encode('utf-8')
+        chunks: list[str] = []
+
+        i = 0
+        while i < len(text_bytes):
+            # Take up to chunk_size bytes
+            end = min(i + chunk_size, len(text_bytes))
+            chunk_bytes = text_bytes[i:end]
+
+            # If we're not at the end, ensure we don't split a multi-byte character
+            if end < len(text_bytes):
+                # Walk back if we're in the middle of a UTF-8 sequence
+                # Continuation bytes have pattern 10xxxxxx (0x80-0xBF)
+                while chunk_bytes and (chunk_bytes[-1] & 0xC0) == 0x80:
+                    chunk_bytes = chunk_bytes[:-1]
+
+                # Safety check: if we walked back to nothing, something is wrong
+                # This should never happen with valid UTF-8, but handle gracefully
+                if not chunk_bytes:
+                    log_always(
+                        f'UTF-8 boundary detection failed at position {i}, '
+                        f'forcing single character chunk',
+                        level='WARN',
+                    )
+                    # Find the start byte and include the full character
+                    start_byte = text_bytes[i]
+                    if (start_byte & 0x80) == 0x00:
+                        char_len = 1  # ASCII
+                    elif (start_byte & 0xE0) == 0xC0:
+                        char_len = 2  # 2-byte char
+                    elif (start_byte & 0xF0) == 0xE0:
+                        char_len = 3  # 3-byte char
+                    elif (start_byte & 0xF8) == 0xF0:
+                        char_len = 4  # 4-byte char
+                    else:
+                        char_len = 1  # Fallback for malformed UTF-8
+                    chunk_bytes = text_bytes[i : i + char_len]
+
+            # Decode the chunk and add to list
+            try:
+                chunk_str = chunk_bytes.decode('utf-8')
+                chunks.append(chunk_str)
+            except UnicodeDecodeError as e:
+                # This should never happen if our boundary logic is correct
+                log_always(
+                    f'UTF-8 decode error at position {i}: {e}. '
+                    f'Chunk bytes (first 20): {chunk_bytes[:20]!r}',
+                    level='ERROR',
+                )
+                # Skip problematic bytes and continue
+                i += 1
+                continue
+
+            i += len(chunk_bytes)
+
+        return chunks
+
     async def _store_single_context_async(
         self,
         thread_id: str,
@@ -501,28 +585,31 @@ class SyncMCPClient:
             level='WARN',
         )
 
-        # Calculate safe chunk size (account for JSON overhead and metadata)
-        safe_chunk_size = _CHUNK_SIZE
-        chunks: list[str] = []
+        # FIX: Use byte-based chunking with UTF-8 boundary handling
+        # This ensures each chunk respects the byte limit even for multi-byte characters
+        chunks = self._chunk_text_by_bytes(text, _CHUNK_SIZE)
 
-        # Split text into chunks
-        for i in range(0, len(text), safe_chunk_size):
-            chunk = text[i : i + safe_chunk_size]
-            chunks.append(chunk)
-
-        log_always(f'Split message into {len(chunks)} chunks of ~{safe_chunk_size} bytes each')
+        # Log chunk statistics for debugging
+        text_bytes = len(text.encode('utf-8'))
+        chunk_byte_sizes = [len(c.encode('utf-8')) for c in chunks]
+        log_always(
+            f'Split {text_bytes} bytes into {len(chunks)} chunks: '
+            f'sizes={chunk_byte_sizes}, avg={sum(chunk_byte_sizes) / len(chunks):.0f} bytes',
+        )
 
         # Store each chunk with metadata indicating chunk info
         results: list[dict[str, Any]] = []
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
-            log_always(f'Storing chunk {chunk_num}/{len(chunks)} ({len(chunk)} chars)')
+            chunk_byte_size = len(chunk.encode('utf-8'))
+            log_always(f'Storing chunk {chunk_num}/{len(chunks)} ({len(chunk)} chars, {chunk_byte_size} bytes)')
 
-            # Add metadata to track chunks
+            # Add metadata to track chunks (includes both char and byte sizes)
             metadata = {
                 'chunk': chunk_num,
                 'total_chunks': len(chunks),
-                'chunk_size': len(chunk),
+                'chunk_size_chars': len(chunk),
+                'chunk_size_bytes': chunk_byte_size,
                 'is_chunked': True,
             }
 
@@ -541,11 +628,12 @@ class SyncMCPClient:
         failed_chunks = [r for r in results if 'error' in r]
 
         return {
-            'success': True,
+            'success': len(failed_chunks) == 0,
             'chunked': True,
             'total_chunks': len(chunks),
             'chunks_stored': len(successful_chunks),
             'chunks_failed': len(failed_chunks),
+            'total_bytes': text_bytes,
             'results': results,
         }
 
