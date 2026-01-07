@@ -62,16 +62,85 @@ class MCPServerStdio(BaseModel):
 
 
 class HookEvent(BaseModel):
-    """Hook event configuration."""
+    """Hook event configuration.
 
-    event: str = Field(..., description='Event name (e.g., PostToolUse, Notification)')
+    Supports two hook types:
+    - command: Executes a script/command (requires 'command' field)
+    - prompt: Uses LLM for evaluation (requires 'prompt' field)
+    """
+
+    event: str = Field(..., description='Event name (e.g., PreToolUse, PostToolUse, Notification)')
     matcher: str | None = Field('', description='Regex pattern for matching')
-    type: Literal['command'] = Field('command', description='Hook type')
-    command: str = Field(..., description='Command to execute')
+    type: Literal['command', 'prompt'] = Field('command', description='Hook type: command or prompt')
+
+    # Command hook fields
+    command: str | None = Field(
+        None,
+        description='Command to execute (required for command hooks, forbidden for prompt hooks)',
+    )
     config: str | None = Field(
         None,
         description='Optional config file reference to pass as argument to hook command',
     )
+
+    # Prompt hook fields
+    prompt: str | None = Field(
+        None,
+        description='Prompt text sent to LLM for evaluation (required for prompt hooks, forbidden for command hooks)',
+    )
+    timeout: int | None = Field(
+        None,
+        description='Timeout in seconds for prompt hook LLM evaluation (optional, default 30)',
+    )
+
+    @model_validator(mode='after')
+    def validate_hook_type_fields(self) -> 'HookEvent':
+        """Validate that fields are correctly set based on hook type.
+
+        For command hooks:
+        - command is required
+        - prompt is forbidden
+
+        For prompt hooks:
+        - prompt is required
+        - command is forbidden
+        - config is forbidden
+
+        Returns:
+            The validated HookEvent instance.
+
+        Raises:
+            ValueError: If field requirements are not met for the hook type.
+        """
+        if self.type == 'command':
+            if not self.command:
+                raise ValueError(
+                    "Hook type 'command' requires 'command' field. "
+                    "Either provide a command or change type to 'prompt'.",
+                )
+            if self.prompt is not None:
+                raise ValueError(
+                    "Hook type 'command' cannot have 'prompt' field. "
+                    "Use type 'prompt' for LLM-based hooks.",
+                )
+        elif self.type == 'prompt':
+            if not self.prompt:
+                raise ValueError(
+                    "Hook type 'prompt' requires 'prompt' field. "
+                    "Either provide a prompt or change type to 'command'.",
+                )
+            if self.command is not None:
+                raise ValueError(
+                    "Hook type 'prompt' cannot have 'command' field. "
+                    "Use type 'command' for script-based hooks.",
+                )
+            if self.config is not None:
+                raise ValueError(
+                    "Hook type 'prompt' cannot have 'config' field. "
+                    "Config files are only used with command hooks.",
+                )
+
+        return self
 
 
 class FileToDownload(BaseModel):
@@ -558,8 +627,11 @@ class EnvironmentConfig(BaseModel):
 
         Ensures:
         1. Each file in hooks.files is used somewhere (events or status-line)
-        2. Each file referenced in hooks.events exists in hooks.files
+        2. Each file referenced in hooks.events (command hooks only) exists in hooks.files
         3. The status-line.file (if configured) exists in hooks.files
+
+        Note: Prompt hooks (type='prompt') do not use command or config files,
+        so they are excluded from file consistency validation.
 
         Returns:
             The validated EnvironmentConfig instance.
@@ -587,16 +659,23 @@ class EnvironmentConfig(BaseModel):
         # Track which files are used
         used_files: set[str] = set()
 
-        # Rule 2: Check that each event command and config exists in hooks.files
+        # Rule 2: Check that each command hook's command and config exists in hooks.files
+        # Prompt hooks are excluded - they don't use command or config files
         for event in self.hooks.events:
-            command_file = event.command.strip()
-            if command_file:
-                if command_file not in available_files:
-                    raise ValueError(
-                        f'hooks.events command "{command_file}" not found in hooks.files. '
-                        f'Available files: {sorted(available_files) if available_files else "none"}',
-                    )
-                used_files.add(command_file)
+            # Skip prompt hooks - they don't use command or config files
+            if event.type == 'prompt':
+                continue
+
+            # For command hooks, validate command and config files
+            if event.command:
+                command_file = event.command.strip()
+                if command_file:
+                    if command_file not in available_files:
+                        raise ValueError(
+                            f'hooks.events command "{command_file}" not found in hooks.files. '
+                            f'Available files: {sorted(available_files) if available_files else "none"}',
+                        )
+                    used_files.add(command_file)
 
             # Check config file reference if present
             if event.config:
