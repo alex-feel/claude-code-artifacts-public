@@ -81,6 +81,7 @@ _JSON_OVERHEAD = 500  # Estimated bytes for JSON structure (thread_id, source, e
 # Maintains backward compatibility with original behavior
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
+    'skip_patterns': [],  # Regex patterns to skip (for internal hook prompts)
     'prebuilt_commands': [
         'add-dir',
         'agents',
@@ -682,6 +683,38 @@ def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
     return command_name in prebuilt_commands
 
 
+def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
+    """
+    Check if a prompt matches any skip pattern (for filtering internal hook prompts).
+
+    This function filters out internal hook prompts from being saved to the context
+    server. When hooks of `type: prompt` are evaluated, they trigger UserPromptSubmit
+    events that would otherwise be captured and saved as user messages.
+
+    Args:
+        prompt: The prompt text to check
+        config: Configuration dictionary with skip_patterns list
+
+    Returns:
+        True if the prompt matches any skip pattern, False otherwise
+    """
+    skip_patterns = config.get('skip_patterns', DEFAULT_CONFIG['skip_patterns'])
+
+    if not skip_patterns:
+        return False
+
+    for pattern in skip_patterns:
+        try:
+            if re.match(pattern, prompt):
+                log_always(f'Prompt matches skip pattern: {pattern[:50]}...')
+                return True
+        except re.error as e:
+            log_always(f'Invalid regex pattern "{pattern}": {e}', level='ERROR')
+            continue
+
+    return False
+
+
 def read_session_id(project_dir: str, config: dict[str, Any]) -> str:
     """
     Read the current session ID from the .claude/.session_id file with retry logic.
@@ -931,6 +964,12 @@ def main() -> None:
         if is_prebuilt_slash_command(prompt, config):
             # Skip pre-built slash commands
             log_always('Skipping: Pre-built slash command detected')
+            sys.exit(0)
+
+        # Check if this prompt matches any skip pattern (internal hook prompts)
+        if matches_skip_pattern(prompt, config):
+            # Skip internal hook prompts
+            log_always('Skipping: Internal hook prompt detected')
             sys.exit(0)
 
         # Get Claude project directory
