@@ -172,7 +172,7 @@ ENV CLAUDE_SYSTEM_PROMPT=/claude/prompts/python-developer.md
 ### Common Issues and Solutions
 
 | Issue | Solution |
-|-------|----------|
+| ----- | -------- |
 | Prompt too long | Split into focused sections, remove redundancy |
 | Subagents not invoked | Add explicit "Use PROACTIVELY" triggers |
 | Conflicting instructions | Prioritize with "CRITICAL" markers |
