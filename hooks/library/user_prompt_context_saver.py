@@ -122,7 +122,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'mcp_server': {
         'command': 'uvx',
         'python_version': '3.12',
-        'package': 'mcp-context-server[embeddings-ollama]',
+        'package': 'mcp-context-server[embeddings-ollama]<1.0.0',
         'entry_point': 'mcp-context-server',
     },
 }
@@ -794,7 +794,7 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     # Build MCP server command from config
     server_command: str = server_config.get('command', 'uvx')
     python_version: str = server_config.get('python_version', '3.12')
-    package: str = server_config.get('package', 'mcp-context-server[embeddings-ollama]')
+    package: str = server_config.get('package', 'mcp-context-server[embeddings-ollama]<1.0.0')
     entry_point: str = server_config.get('entry_point', 'mcp-context-server')
 
     log_always('Creating MCP client with retry logic')
