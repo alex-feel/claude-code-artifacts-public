@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12,<3.13"
+# dependencies = [
+#   "fastmcp>=2.10.5",
+#   "pyyaml",
+# ]
+# ///
 """
 User Prompt Context Saver Hook for Claude Code.
 
@@ -11,14 +18,6 @@ text prompts are captured and stored.
 
 Trigger: UserPromptSubmit
 """
-
-# /// script
-# requires-python = ">=3.12,<3.13"
-# dependencies = [
-#   "fastmcp>=2.10.5",
-#   "pyyaml",
-# ]
-# ///
 
 import asyncio
 import ctypes
@@ -116,6 +115,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     'mcp_client': {
         'max_retries': 3,
+        'max_connection_retries': 3,  # Retry attempts for actual MCP connection
+        'connection_timeout': 30.0,  # Timeout per connection attempt (seconds)
         'timeout_first_run': 60.0,
         'timeout_normal': 60.0,
     },
@@ -124,6 +125,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'python_version': '3.12',
         'package': 'mcp-context-server<1.0.0',
         'entry_point': 'mcp-context-server',
+        'prewarm_cache': True,  # Pre-warm uvx cache at module load
     },
 }
 
@@ -223,6 +225,58 @@ if _fastmcp_import_error is not None:
     sys.exit(0)
 
 log_always('FastMCP available')
+
+
+def _warmup_uvx_cache() -> None:
+    """
+    Pre-warm uvx cache to avoid cold start delays.
+
+    Runs a lightweight uvx command to ensure the package is cached.
+    This helps prevent "Connection closed" errors on first run due to
+    uvx downloading packages from PyPI.
+
+    This function:
+    - Runs synchronously at module load
+    - Silent failure (never breaks the hook)
+    - Uses --help flag for minimal execution time
+    """
+    import subprocess
+
+    server_config = DEFAULT_CONFIG.get('mcp_server', {})
+    if not server_config.get('prewarm_cache', True):
+        log_always('uvx cache pre-warm disabled via config')
+        return
+
+    command = server_config.get('command', 'uvx')
+    python_version = server_config.get('python_version', '3.12')
+    package = server_config.get('package', 'mcp-context-server<1.0.0')
+
+    try:
+        log_always('Pre-warming uvx cache...')
+        # Use --help to trigger package download without starting server
+        # Command list is built from trusted config values
+        warmup_cmd = [str(command), '--python', str(python_version), '--with', str(package), '--help']
+        result = subprocess.run(
+            warmup_cmd,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            log_always('uvx cache pre-warm successful')
+        else:
+            log_always(f'uvx cache pre-warm returned code {result.returncode}', level='WARN')
+    except subprocess.TimeoutExpired:
+        log_always('uvx cache pre-warm timed out (continuing anyway)', level='WARN')
+    except FileNotFoundError:
+        log_always('uvx command not found (continuing anyway)', level='WARN')
+    except Exception as e:
+        # Silent failure for pre-warm
+        log_always(f'uvx cache pre-warm failed: {type(e).__name__}: {e}', level='WARN')
+
+
+# Pre-warm uvx cache at module load (non-blocking, silent failure)
+_warmup_uvx_cache()
 
 
 def setup_windows_utf8() -> None:
@@ -353,16 +407,30 @@ class SyncMCPClient:
     context, which is required for Claude Code hooks.
     """
 
-    def __init__(self, server_command: list[str] | str, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        server_command: list[str] | str,
+        timeout: float = 60.0,
+        max_connection_retries: int = 3,
+        connection_timeout: float = 30.0,
+    ) -> None:
         """
         Initialize the synchronous MCP client wrapper.
 
         Args:
             server_command: Command to start the MCP server (list or string)
             timeout: Timeout in seconds for MCP operations
+            max_connection_retries: Number of retry attempts for MCP connection
+            connection_timeout: Timeout in seconds per connection attempt
         """
         self.server_command = server_command
         self.timeout = timeout
+        self.max_connection_retries = max_connection_retries
+        self.connection_timeout = connection_timeout
+        log_always(
+            f'SyncMCPClient initialized: command={server_command}, timeout={timeout}, '
+            f'max_conn_retries={max_connection_retries}, conn_timeout={connection_timeout}',
+        )
 
     def _run_async(self, coro: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
         """
@@ -497,6 +565,9 @@ class SyncMCPClient:
         """
         Store a single context message asynchronously using the MCP server.
 
+        Includes retry logic with exponential backoff for connection reliability.
+        The connection is wrapped in asyncio.timeout() to prevent hanging.
+
         Args:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
@@ -505,50 +576,91 @@ class SyncMCPClient:
 
         Returns:
             The server response as a dictionary
+
+        Raises:
+            RuntimeError: If all connection retries are exhausted
         """
-        # Create transport manually for complex commands
         from fastmcp.client.transports import StdioTransport
 
-        # StdioTransport expects the command and args separately
+        log_always(f'_store_single_context_async called: thread_id={thread_id}, source={source}, text_len={len(text)}')
+
         if isinstance(self.server_command, list):
             cmd = self.server_command[0]
             args = self.server_command[1:] if len(self.server_command) > 1 else []
         else:
-            # If it's a string, try to split it
             parts = self.server_command.split()
             cmd = parts[0]
             args = parts[1:] if len(parts) > 1 else []
 
-        # Pass PYTHONUTF8=1 to subprocess via environment
-        # This ensures subprocess starts with UTF-8 mode enabled from the beginning.
-        # Setting os.environ after Python starts doesn't affect subprocess initialization.
+        log_always(f'MCP server command: {cmd} {args}')
+
         env = os.environ.copy()
         env['PYTHONUTF8'] = '1'
 
-        # Create transport with environment variables for UTF-8 encoding
-        transport = cast(Any, StdioTransport(cmd, args, env=env))
+        last_error: Exception | None = None
+        max_retries = self.max_connection_retries
+        conn_timeout = self.connection_timeout
 
-        # Use the client with explicit cast
-        async with cast(Any, Client(transport)) as client:
-            # Normalize Windows line endings for NDJSON format
-            # Windows CRLF (\r\n) can break NDJSON message parsing on stdin/stdout.
-            # Convert all line endings to Unix format (LF) for consistent handling.
-            normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
+        for attempt in range(max_retries):
+            try:
+                log_always(f'Connection attempt {attempt + 1}/{max_retries} (timeout={conn_timeout}s)')
 
-            # Build call parameters
-            params: dict[str, Any] = {
-                'thread_id': thread_id,
-                'source': source,
-                'text': normalized_text,
-            }
-            if metadata:
-                params['metadata'] = metadata
+                transport = cast(Any, StdioTransport(cmd, args, env=env))
+                log_always('StdioTransport created')
 
-            # Call the store_context tool on the MCP server with proper typing
-            return cast(
-                dict[str, Any],
-                await client.call_tool('store_context', params),
-            )
+                # Wrap connection in asyncio.timeout for reliability
+                async with asyncio.timeout(conn_timeout):
+                    async with cast(Any, Client(transport)) as client:
+                        # Connection health check - log successful connection
+                        log_always('MCP client connected successfully (health check passed)')
+
+                        # Normalize Windows line endings for NDJSON format
+                        normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+                        # Build call parameters
+                        params: dict[str, Any] = {
+                            'thread_id': thread_id,
+                            'source': source,
+                            'text': normalized_text,
+                        }
+                        if metadata:
+                            params['metadata'] = metadata
+
+                        log_always(f'Calling store_context with thread_id={thread_id}, source={source}')
+                        result = await client.call_tool('store_context', params)
+                        log_always(f'store_context returned: {type(result).__name__}')
+
+                        return cast(dict[str, Any], result)
+
+            except TimeoutError:
+                last_error = TimeoutError(f'Connection timed out after {conn_timeout}s')
+                log_always(
+                    f'Connection attempt {attempt + 1}/{max_retries} timed out after {conn_timeout}s',
+                    level='WARN',
+                )
+            except Exception as e:
+                last_error = e
+                log_always(
+                    f'Connection attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}',
+                    level='WARN',
+                )
+
+            # Exponential backoff before retry (1s, 2s, 4s)
+            if attempt < max_retries - 1:
+                backoff_delay = 1.0 * (2**attempt)
+                log_always(f'Waiting {backoff_delay}s before retry (exponential backoff)')
+                await asyncio.sleep(backoff_delay)
+
+        # All retries exhausted
+        error_msg = f'All {max_retries} connection attempts failed'
+        if last_error:
+            error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
+        log_always(error_msg, level='ERROR')
+        report_error('MCP_CONNECTION_EXHAUSTED', error_msg)
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(error_msg)
 
     async def _store_context_async(
         self,
@@ -650,7 +762,10 @@ class SyncMCPClient:
         Returns:
             The server response as a dictionary
         """
-        return self._run_async(self._store_context_async(thread_id, source, text))
+        log_always(f'store_context called: thread_id={thread_id}, source={source}, text_len={len(text)}')
+        result = self._run_async(self._store_context_async(thread_id, source, text))
+        log_always('store_context completed successfully')
+        return result
 
 
 def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
@@ -769,11 +884,7 @@ def read_session_id(project_dir: str, config: dict[str, Any]) -> str:
 
 def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     """
-    Create MCP client with retry logic and offline fallback for uvx reliability.
-
-    Implements exponential backoff retry to handle uvx package installation timing,
-    network failures, and cache invalidation issues. Falls back to offline mode
-    if network is unavailable.
+    Create MCP client with retry logic for uvx reliability.
 
     Args:
         config: Configuration dictionary with mcp_client and mcp_server settings
@@ -788,26 +899,28 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     server_config = config.get('mcp_server', DEFAULT_CONFIG['mcp_server'])
 
     max_retries: int = mcp_config.get('max_retries', 3)
+    max_connection_retries: int = mcp_config.get('max_connection_retries', 3)
+    connection_timeout: float = mcp_config.get('connection_timeout', 30.0)
     timeout_first_run: float = mcp_config.get('timeout_first_run', 60.0)
     timeout_normal: float = mcp_config.get('timeout_normal', 60.0)
 
-    # Build MCP server command from config
     server_command: str = server_config.get('command', 'uvx')
     python_version: str = server_config.get('python_version', '3.12')
     package: str = server_config.get('package', 'mcp-context-server<1.0.0')
     entry_point: str = server_config.get('entry_point', 'mcp-context-server')
 
     log_always('Creating MCP client with retry logic')
+    log_always(
+        f'Config: max_retries={max_retries}, max_conn_retries={max_connection_retries}, '
+        f'conn_timeout={connection_timeout}, timeout_first={timeout_first_run}, timeout_normal={timeout_normal}',
+    )
+    log_always(f'Server: command={server_command}, python={python_version}, package={package}, entry={entry_point}')
+
     last_error: Exception | None = None
     attempts = 0
 
     while attempts < max_retries:
         try:
-            # Use uvx with semantic-search extra for embedding support
-            # The [semantic-search] extra includes required dependencies:
-            # - ollama client for embedding generation
-            # - numpy for vector operations
-            # - sqlite-vec for vector similarity search
             mcp_server_command = [
                 server_command,
                 '--python',
@@ -816,14 +929,14 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                 package,
                 entry_point,
             ]
-            # Longer timeout for first run (package download), standard timeout for retries
             timeout = timeout_first_run if attempts == 0 else timeout_normal
             log_always(f'Attempt {attempts + 1}/{max_retries}: Creating MCP client (timeout={timeout}s)')
-            client = SyncMCPClient(mcp_server_command, timeout=timeout)
-
-            # Test connectivity with a simple operation (will raise if connection fails)
-            # Note: We don't actually test here to avoid extra overhead
-            # The connection will be tested when store_context is called
+            client = SyncMCPClient(
+                mcp_server_command,
+                timeout=timeout,
+                max_connection_retries=max_connection_retries,
+                connection_timeout=connection_timeout,
+            )
 
             if attempts > 0:
                 log_always(f'MCP client created successfully on attempt {attempts + 1}/{max_retries}')
@@ -836,13 +949,12 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
             last_error = e
             attempts += 1
             error_msg = f'Failed to create MCP client (attempt {attempts}/{max_retries}): {type(e).__name__}: {e}'
+            log_always(error_msg, level='ERROR')
 
             if attempts < max_retries:
-                # Try offline fallback on subsequent attempts
                 if attempts > 1:
                     try:
                         log_always(f'{error_msg}, trying offline mode')
-                        # Use offline mode with semantic-search extra (requires prior uvx cache)
                         mcp_server_command = [
                             server_command,
                             '--python',
@@ -852,7 +964,12 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                             '--offline',
                             entry_point,
                         ]
-                        client = SyncMCPClient(mcp_server_command, timeout=timeout_normal)
+                        client = SyncMCPClient(
+                            mcp_server_command,
+                            timeout=timeout_normal,
+                            max_connection_retries=max_connection_retries,
+                            connection_timeout=connection_timeout,
+                        )
                         log_always('MCP client created successfully in offline mode')
                         return client
                     except Exception as offline_error:
@@ -861,15 +978,12 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                             level='ERROR',
                         )
 
-                # Exponential backoff
-                log_always(error_msg, level='ERROR')
-                sleep_time = 0.5 * (2 ** (attempts - 1))  # 0.5s, 1s, 2s
+                sleep_time = 0.5 * (2 ** (attempts - 1))
+                log_always(f'Sleeping {sleep_time}s before retry')
                 time.sleep(sleep_time)
             else:
-                # Final attempt failed
                 report_error('UVX_FAILURE', error_msg)
 
-    # All retries exhausted
     if last_error:
         raise last_error
     raise RuntimeError('Failed to create MCP client after all retries')
