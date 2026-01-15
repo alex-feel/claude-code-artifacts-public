@@ -127,6 +127,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'entry_point': 'mcp-context-server',
         'prewarm_cache': True,  # Pre-warm uvx cache at module load
     },
+    'chunking': {
+        'max_chunk_retries': 3,  # Retries per chunk within single connection
+        'chunk_retry_delay': 0.5,  # Initial delay between chunk retries (seconds)
+        'fail_mode': 'warn',  # 'silent', 'warn', or 'error'
+    },
 }
 
 
@@ -413,6 +418,7 @@ class SyncMCPClient:
         timeout: float = 60.0,
         max_connection_retries: int = 3,
         connection_timeout: float = 30.0,
+        config: dict[str, Any] | None = None,
     ) -> None:
         """
         Initialize the synchronous MCP client wrapper.
@@ -422,11 +428,13 @@ class SyncMCPClient:
             timeout: Timeout in seconds for MCP operations
             max_connection_retries: Number of retry attempts for MCP connection
             connection_timeout: Timeout in seconds per connection attempt
+            config: Optional configuration dictionary with chunking settings
         """
         self.server_command = server_command
         self.timeout = timeout
         self.max_connection_retries = max_connection_retries
         self.connection_timeout = connection_timeout
+        self.config = config or DEFAULT_CONFIG
         log_always(
             f'SyncMCPClient initialized: command={server_command}, timeout={timeout}, '
             f'max_conn_retries={max_connection_retries}, conn_timeout={connection_timeout}',
@@ -675,6 +683,10 @@ class SyncMCPClient:
         exceed the Windows subprocess pipe buffer limit (~64KB). Messages are split
         at safe boundaries to avoid breaking UTF-8 encoding.
 
+        CRITICAL: Uses a SINGLE MCP connection for ALL chunks to prevent connection
+        churn and ensure reliable chunked storage. Per-chunk retry with exponential
+        backoff is implemented within the single connection.
+
         Args:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
@@ -698,7 +710,7 @@ class SyncMCPClient:
             level='WARN',
         )
 
-        # FIX: Use byte-based chunking with UTF-8 boundary handling
+        # Use byte-based chunking with UTF-8 boundary handling
         # This ensures each chunk respects the byte limit even for multi-byte characters
         chunks = self._chunk_text_by_bytes(text, _CHUNK_SIZE)
 
@@ -710,45 +722,200 @@ class SyncMCPClient:
             f'sizes={chunk_byte_sizes}, avg={sum(chunk_byte_sizes) / len(chunks):.0f} bytes',
         )
 
-        # Store each chunk with metadata indicating chunk info
-        results: list[dict[str, Any]] = []
-        for idx, chunk in enumerate(chunks):
-            chunk_num = idx + 1
-            chunk_byte_size = len(chunk.encode('utf-8'))
-            log_always(f'Storing chunk {chunk_num}/{len(chunks)} ({len(chunk)} chars, {chunk_byte_size} bytes)')
+        # Get chunking config settings
+        chunking_config = self.config.get('chunking', DEFAULT_CONFIG['chunking'])
+        max_chunk_retries = chunking_config.get('max_chunk_retries', 3)
+        chunk_retry_delay = chunking_config.get('chunk_retry_delay', 0.5)
 
-            # Add metadata to track chunks (includes both char and byte sizes)
-            metadata = {
-                'chunk': chunk_num,
-                'total_chunks': len(chunks),
-                'chunk_size_chars': len(chunk),
-                'chunk_size_bytes': chunk_byte_size,
-                'is_chunked': True,
-            }
+        # Use SINGLE connection for ALL chunks to prevent connection churn
+        return await self._store_chunks_single_connection(
+            thread_id=thread_id,
+            source=source,
+            chunks=chunks,
+            text_bytes=text_bytes,
+            max_chunk_retries=max_chunk_retries,
+            chunk_retry_delay=chunk_retry_delay,
+        )
 
+    async def _store_chunks_single_connection(
+        self,
+        thread_id: str,
+        source: str,
+        chunks: list[str],
+        text_bytes: int,
+        max_chunk_retries: int,
+        chunk_retry_delay: float,
+    ) -> dict[str, Any]:
+        """
+        Store all chunks using a SINGLE MCP connection.
+
+        This method establishes ONE connection and stores ALL chunks through it,
+        with per-chunk retry logic using exponential backoff. This prevents the
+        connection churn that was causing chunk 2+ failures.
+
+        Args:
+            thread_id: The thread/session identifier
+            source: The source of the context
+            chunks: List of text chunks to store
+            text_bytes: Total size in bytes for logging
+            max_chunk_retries: Maximum retry attempts per chunk
+            chunk_retry_delay: Initial delay between chunk retries (seconds)
+
+        Returns:
+            Summary of chunked storage results
+
+        Raises:
+            RuntimeError: If all connection retries are exhausted
+        """
+        from fastmcp.client.transports import StdioTransport
+
+        log_always(f'_store_chunks_single_connection: storing {len(chunks)} chunks through SINGLE connection')
+
+        if isinstance(self.server_command, list):
+            cmd = self.server_command[0]
+            args = self.server_command[1:] if len(self.server_command) > 1 else []
+        else:
+            parts = self.server_command.split()
+            cmd = parts[0]
+            args = parts[1:] if len(parts) > 1 else []
+
+        log_always(f'MCP server command: {cmd} {args}')
+
+        env = os.environ.copy()
+        env['PYTHONUTF8'] = '1'
+
+        last_error: Exception | None = None
+        max_retries = self.max_connection_retries
+        # Extended timeout for chunked storage: base timeout * number of chunks
+        extended_timeout = self.connection_timeout * max(len(chunks), 2)
+
+        for conn_attempt in range(max_retries):
             try:
-                result = await self._store_single_context_async(thread_id, source, chunk, metadata=metadata)
-                results.append(result)
-                log_always(f'Chunk {chunk_num}/{len(chunks)} stored successfully')
+                log_always(f'Connection attempt {conn_attempt + 1}/{max_retries} (timeout={extended_timeout}s)')
+
+                transport = cast(Any, StdioTransport(cmd, args, env=env))
+                log_always('StdioTransport created for chunked storage')
+
+                # Wrap connection in asyncio.timeout for reliability
+                async with asyncio.timeout(extended_timeout):
+                    async with cast(Any, Client(transport)) as client:
+                        log_always('MCP client connected for chunked storage (SINGLE connection for all chunks)')
+
+                        results: list[dict[str, Any]] = []
+
+                        # Store ALL chunks through the SAME connection
+                        for idx, chunk in enumerate(chunks):
+                            chunk_num = idx + 1
+                            chunk_byte_size = len(chunk.encode('utf-8'))
+                            log_always(
+                                f'Storing chunk {chunk_num}/{len(chunks)} '
+                                f'({len(chunk)} chars, {chunk_byte_size} bytes)',
+                            )
+
+                            # Add metadata to track chunks
+                            metadata = {
+                                'chunk': chunk_num,
+                                'total_chunks': len(chunks),
+                                'chunk_size_chars': len(chunk),
+                                'chunk_size_bytes': chunk_byte_size,
+                                'is_chunked': True,
+                            }
+
+                            # Per-chunk retry with exponential backoff (within same connection)
+                            chunk_stored = False
+                            chunk_last_error: Exception | None = None
+
+                            for chunk_attempt in range(max_chunk_retries):
+                                try:
+                                    # Normalize Windows line endings for NDJSON format
+                                    normalized_chunk = chunk.replace('\r\n', '\n').replace('\r', '\n')
+
+                                    params: dict[str, Any] = {
+                                        'thread_id': thread_id,
+                                        'source': source,
+                                        'text': normalized_chunk,
+                                        'metadata': metadata,
+                                    }
+
+                                    result = await client.call_tool('store_context', params)
+                                    results.append(cast(dict[str, Any], result))
+                                    log_always(f'Chunk {chunk_num}/{len(chunks)} stored successfully')
+                                    chunk_stored = True
+                                    break  # Success, move to next chunk
+
+                                except Exception as chunk_error:
+                                    chunk_last_error = chunk_error
+                                    if chunk_attempt < max_chunk_retries - 1:
+                                        # Exponential backoff: delay * 2^attempt
+                                        backoff = chunk_retry_delay * (2**chunk_attempt)
+                                        log_always(
+                                            f'Chunk {chunk_num} attempt {chunk_attempt + 1}/{max_chunk_retries} '
+                                            f'failed: {chunk_error}. Retrying in {backoff}s',
+                                            level='WARN',
+                                        )
+                                        await asyncio.sleep(backoff)
+                                    else:
+                                        log_always(
+                                            f'Chunk {chunk_num} failed after {max_chunk_retries} attempts: '
+                                            f'{chunk_error}',
+                                            level='ERROR',
+                                        )
+
+                            if not chunk_stored:
+                                # All retries exhausted for this chunk
+                                error_msg = str(chunk_last_error) if chunk_last_error else 'Unknown error'
+                                error_result: dict[str, Any] = {'error': error_msg, 'chunk': chunk_num}
+                                results.append(error_result)
+
+                        # All chunks processed - return results
+                        successful_chunks = [r for r in results if 'error' not in r]
+                        failed_chunks = [r for r in results if 'error' in r]
+
+                        log_always(
+                            f'Chunked storage complete: {len(successful_chunks)}/{len(chunks)} succeeded, '
+                            f'{len(failed_chunks)} failed',
+                        )
+
+                        return {
+                            'success': len(failed_chunks) == 0,
+                            'chunked': True,
+                            'total_chunks': len(chunks),
+                            'chunks_stored': len(successful_chunks),
+                            'chunks_failed': len(failed_chunks),
+                            'total_bytes': text_bytes,
+                            'results': results,
+                            'failed_chunk_numbers': [r['chunk'] for r in failed_chunks],
+                        }
+
+            except TimeoutError:
+                last_error = TimeoutError(f'Connection timed out after {extended_timeout}s')
+                log_always(
+                    f'Connection attempt {conn_attempt + 1}/{max_retries} timed out after {extended_timeout}s',
+                    level='WARN',
+                )
             except Exception as e:
-                log_always(f'Failed to store chunk {chunk_num}/{len(chunks)}: {e}', level='ERROR')
-                # Continue with other chunks even if one fails
-                error_result: dict[str, Any] = {'error': str(e), 'chunk': chunk_num}
-                results.append(error_result)
+                last_error = e
+                log_always(
+                    f'Connection attempt {conn_attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}',
+                    level='WARN',
+                )
 
-        # Return summary of chunked storage
-        successful_chunks = [r for r in results if 'error' not in r]
-        failed_chunks = [r for r in results if 'error' in r]
+            # Exponential backoff before retry (1s, 2s, 4s)
+            if conn_attempt < max_retries - 1:
+                backoff_delay = 1.0 * (2**conn_attempt)
+                log_always(f'Waiting {backoff_delay}s before connection retry (exponential backoff)')
+                await asyncio.sleep(backoff_delay)
 
-        return {
-            'success': len(failed_chunks) == 0,
-            'chunked': True,
-            'total_chunks': len(chunks),
-            'chunks_stored': len(successful_chunks),
-            'chunks_failed': len(failed_chunks),
-            'total_bytes': text_bytes,
-            'results': results,
-        }
+        # All connection retries exhausted
+        error_msg = f'All {max_retries} connection attempts failed for chunked storage'
+        if last_error:
+            error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
+        log_always(error_msg, level='ERROR')
+        report_error('MCP_CHUNKED_CONNECTION_EXHAUSTED', error_msg)
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(error_msg)
 
     def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
         """
@@ -936,6 +1103,7 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                 timeout=timeout,
                 max_connection_retries=max_connection_retries,
                 connection_timeout=connection_timeout,
+                config=config,
             )
 
             if attempts > 0:
@@ -969,6 +1137,7 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
                             timeout=timeout_normal,
                             max_connection_retries=max_connection_retries,
                             connection_timeout=connection_timeout,
+                            config=config,
                         )
                         log_always('MCP client created successfully in offline mode')
                         return client
@@ -1119,12 +1288,45 @@ def main() -> None:
             # Store the user prompt in the context server
             # Using session_id as thread_id to group prompts by session
             log_always('Storing context in MCP server')
-            client.store_context(
+            result = client.store_context(
                 thread_id=session_id,
                 source='user',
                 text=prompt,
             )
-            log_always('SUCCESS: Context stored successfully')
+
+            # Check for chunked storage with partial failures and provide user feedback
+            if result.get('chunked', False):
+                chunks_failed = result.get('chunks_failed', 0)
+                total_chunks = result.get('total_chunks', 0)
+                chunks_stored = result.get('chunks_stored', 0)
+
+                if chunks_failed > 0:
+                    # Get fail_mode from config
+                    chunking_config = config.get('chunking', DEFAULT_CONFIG['chunking'])
+                    fail_mode = chunking_config.get('fail_mode', 'warn')
+
+                    failed_numbers = result.get('failed_chunk_numbers', [])
+                    feedback_msg = (
+                        f'Context storage partial failure: {chunks_failed}/{total_chunks} chunks failed '
+                        f'(chunks {failed_numbers}). {chunks_stored} chunks stored successfully.'
+                    )
+
+                    # Always log the failure (existing logging continues)
+                    log_always(feedback_msg, level='WARN')
+                    report_error('CHUNK_STORAGE_PARTIAL', feedback_msg)
+
+                    # User feedback based on fail_mode (displays in TUI)
+                    if fail_mode == 'warn':
+                        print(f'[WARN] {feedback_msg}', file=sys.stderr)
+                    elif fail_mode == 'error':
+                        print(f'[ERROR] {feedback_msg}', file=sys.stderr)
+                    # 'silent' mode: no stderr output, only logging
+
+                    log_always(f'User feedback mode: {fail_mode}')
+                else:
+                    log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
+            else:
+                log_always('SUCCESS: Context stored successfully')
 
         except Exception as e:
             # Log the error for debugging with full traceback, then suppress as designed
