@@ -66,7 +66,7 @@ def main() -> None:
             f'SESSION CONTEXT: Session ID is {session_id}.\n'
             'This session ID is used to maintain context and continuity across your interactions. '
             'Remember this session ID as it may be referenced in context retrieval operations.\n\n'
-            f'CRITICAL: When spawning subagents via the Task tool, include this session ID ({session_id}) '
+            f'CRITICAL: When spawning or resuming subagents via the Task tool, include this session ID ({session_id}) '
             'in the task prompt to maintain context continuity across the agent hierarchy.'
         )
         print(context_message)
