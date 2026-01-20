@@ -4,6 +4,7 @@
 # dependencies = [
 #   "fastmcp>=2.10.5",
 #   "pyyaml",
+#   "httpx",
 # ]
 # ///
 """
@@ -121,11 +122,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'timeout_normal': 60.0,
     },
     'mcp_server': {
+        # Transport type: 'stdio' (default, existing behavior) or 'http'
+        'transport': 'stdio',
+        # For stdio transport (existing behavior)
         'command': 'uvx',
         'python_version': '3.12',
         'package': 'mcp-context-server<1.0.0',
         'entry_point': 'mcp-context-server',
         'prewarm_cache': True,  # Pre-warm uvx cache at module load
+        # For http transport (used when transport: http)
+        # 'url': 'https://mcp-context-server.example.com/mcp',
+        # 'headers': {},  # Optional custom headers for authentication
+        # 'timeout': 30.0,  # Request timeout in seconds
     },
     'chunking': {
         'max_chunk_retries': 3,  # Retries per chunk within single connection
@@ -935,6 +943,153 @@ class SyncMCPClient:
         return result
 
 
+class HTTPMCPClient:
+    """
+    HTTP-based MCP client for connecting to remote MCP servers.
+
+    This client uses httpx to send POST requests to an MCP server endpoint,
+    bypassing the need to spawn a local subprocess via stdio transport.
+
+    The MCP protocol over HTTP uses JSON-RPC style requests.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        timeout: float = 30.0,
+        headers: dict[str, str] | None = None,
+        max_retries: int = 3,
+        config: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Initialize the HTTP MCP client.
+
+        Args:
+            url: The MCP server endpoint URL
+            timeout: Request timeout in seconds
+            headers: Optional custom headers for authentication
+            max_retries: Number of retry attempts for failed requests
+            config: Optional configuration dictionary
+        """
+        self.url = url
+        self.timeout = timeout
+        self.headers = headers or {}
+        self.max_retries = max_retries
+        self.config = config or DEFAULT_CONFIG
+        log_always(
+            f'HTTPMCPClient initialized: url={url}, timeout={timeout}, '
+            f'max_retries={max_retries}',
+        )
+
+    def _calculate_message_size(self, thread_id: str, source: str, text: str) -> int:
+        """Calculate the JSON message size in bytes."""
+        test_json = json.dumps({'thread_id': thread_id, 'source': source, 'text': text})
+        return len(test_json.encode('utf-8'))
+
+    def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
+        """
+        Store context via HTTP POST request to the MCP server.
+
+        Args:
+            thread_id: The thread/session identifier
+            source: The source of the context (always "user" for this hook)
+            text: The prompt text to store
+
+        Returns:
+            The server response as a dictionary
+
+        Raises:
+            RuntimeError: If all HTTP request retries are exhausted
+        """
+        import httpx as httpx_module
+
+        log_always(f'HTTPMCPClient.store_context: thread_id={thread_id}, source={source}, text_len={len(text)}')
+
+        # Normalize Windows line endings
+        normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+        # Build MCP tool call request using JSON-RPC style
+        payload = {
+            'jsonrpc': '2.0',
+            'method': 'tools/call',
+            'params': {
+                'name': 'store_context',
+                'arguments': {
+                    'thread_id': thread_id,
+                    'source': source,
+                    'text': normalized_text,
+                },
+            },
+            'id': 1,
+        }
+
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                log_always(f'HTTP request attempt {attempt + 1}/{self.max_retries}')
+
+                with httpx_module.Client(timeout=self.timeout) as client:
+                    response = client.post(
+                        self.url,
+                        json=payload,
+                        headers={
+                            'Content-Type': 'application/json',
+                            **self.headers,
+                        },
+                    )
+                    response.raise_for_status()
+
+                    result = response.json()
+                    log_always(f'HTTP response received: {type(result).__name__}')
+
+                    # Extract result from JSON-RPC response
+                    if 'result' in result:
+                        return cast(dict[str, Any], result['result'])
+                    if 'error' in result:
+                        error_msg = result['error'].get('message', 'Unknown error')
+                        raise RuntimeError(f'MCP error: {error_msg}')
+                    return cast(dict[str, Any], result)
+
+            except httpx_module.TimeoutException as e:
+                last_error = e
+                log_always(
+                    f'HTTP request attempt {attempt + 1}/{self.max_retries} timed out',
+                    level='WARN',
+                )
+            except httpx_module.HTTPStatusError as e:
+                last_error = e
+                log_always(
+                    f'HTTP request attempt {attempt + 1}/{self.max_retries} failed: '
+                    f'{e.response.status_code} {e.response.text}',
+                    level='WARN',
+                )
+            except Exception as e:
+                last_error = e
+                log_always(
+                    f'HTTP request attempt {attempt + 1}/{self.max_retries} failed: '
+                    f'{type(e).__name__}: {e}',
+                    level='WARN',
+                )
+
+            # Exponential backoff before retry
+            if attempt < self.max_retries - 1:
+                backoff_delay = 1.0 * (2**attempt)
+                log_always(f'Waiting {backoff_delay}s before retry')
+                time.sleep(backoff_delay)
+
+        # All retries exhausted
+        error_msg = f'All {self.max_retries} HTTP request attempts failed'
+        if last_error:
+            error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
+        log_always(error_msg, level='ERROR')
+        report_error('HTTP_MCP_CONNECTION_EXHAUSTED', error_msg)
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(error_msg)
+
+
 def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
     """
     Check if a prompt is a pre-built slash command that should be skipped.
@@ -1158,6 +1313,54 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     raise RuntimeError('Failed to create MCP client after all retries')
 
 
+def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | HTTPMCPClient:
+    """
+    Create appropriate MCP client based on transport configuration.
+
+    This factory function selects between stdio transport (existing behavior via uvx)
+    and HTTP transport (for remote MCP servers like aegis-corporate.yaml).
+
+    Args:
+        config: Configuration dictionary with mcp_server settings
+
+    Returns:
+        Either SyncMCPClient (stdio) or HTTPMCPClient (http)
+
+    Raises:
+        ValueError: If transport type is invalid or required fields missing
+    """
+    server_config = config.get('mcp_server', DEFAULT_CONFIG['mcp_server'])
+    transport = server_config.get('transport', 'stdio')
+
+    log_always(f'Creating MCP client with transport: {transport}')
+
+    if transport == 'http':
+        # HTTP transport for remote MCP servers
+        url = server_config.get('url')
+        if not url:
+            raise ValueError("mcp_server.url is required when transport is 'http'")
+
+        mcp_config = config.get('mcp_client', DEFAULT_CONFIG['mcp_client'])
+        timeout = server_config.get('timeout', mcp_config.get('connection_timeout', 30.0))
+        headers = server_config.get('headers', {})
+        max_retries = mcp_config.get('max_retries', 3)
+
+        log_always(f'HTTP transport: url={url}, timeout={timeout}, max_retries={max_retries}')
+
+        return HTTPMCPClient(
+            url=url,
+            timeout=timeout,
+            headers=headers,
+            max_retries=max_retries,
+            config=config,
+        )
+    if transport == 'stdio':
+        # Existing stdio transport via uvx subprocess
+        log_always('stdio transport: using create_mcp_client_with_retry')
+        return create_mcp_client_with_retry(config)
+    raise ValueError(f"Invalid mcp_server.transport: {transport}. Must be 'stdio' or 'http'")
+
+
 def main() -> None:
     """Main hook execution function."""
     log_always('Entering main() function')
@@ -1282,8 +1485,8 @@ def main() -> None:
             # on subprocess pipes, so we configure it via environment variable
             # (PYTHONUTF8=1) and console codepage (65001) instead.
 
-            # Create client with retry logic and offline fallback
-            client = create_mcp_client_with_retry(config)
+            # Create client based on transport configuration (stdio or http)
+            client = create_mcp_client(config)
 
             # Store the user prompt in the context server
             # Using session_id as thread_id to group prompts by session
