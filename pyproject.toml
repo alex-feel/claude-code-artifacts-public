@@ -39,7 +39,6 @@ line-length = 127
 [tool.ruff.lint]
 # Ignore specific rules
 ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
-extend-per-file-ignores = { "hooks/library/user_prompt_context_saver.py" = ["E402"] }
 # Enable rule groups
 select = [
     "FAST",  # FastAPI

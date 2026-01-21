@@ -1,52 +1,4 @@
 #!/usr/bin/env python3
-# INVOCATION MARKER - MUST be at very top before any imports
-# This diagnostic writes a marker file BEFORE any code that could fail
-import datetime as _marker_datetime
-import os as _marker_os
-import sys as _marker_sys
-
-
-def _write_invocation_marker() -> None:
-    """Write invocation marker to TEMP directory (guaranteed writable)."""
-    try:
-        temp_dir = _marker_os.environ.get('TEMP', _marker_os.environ.get('TMP', '/tmp'))
-        marker_file = _marker_os.path.join(temp_dir, 'user_prompt_context_saver_invoked.txt')
-
-        timestamp = _marker_datetime.datetime.now(_marker_datetime.UTC).isoformat()
-        cwd = _marker_os.getcwd()
-        project_dir = _marker_os.environ.get('CLAUDE_PROJECT_DIR', 'NOT_SET')
-        debug_enabled = _marker_os.environ.get('CLAUDE_HOOK_DEBUG_ENABLED', 'NOT_SET')
-        python_exe = _marker_sys.executable
-
-        # Capture key environment variables
-        env_vars = {
-            'PATH': _marker_os.environ.get('PATH', 'NOT_SET')[:200] + '...',
-            'PYTHONPATH': _marker_os.environ.get('PYTHONPATH', 'NOT_SET'),
-            'HOME': _marker_os.environ.get('HOME', _marker_os.environ.get('USERPROFILE', 'NOT_SET')),
-            'UV_CACHE_DIR': _marker_os.environ.get('UV_CACHE_DIR', 'NOT_SET'),
-        }
-
-        with open(marker_file, 'a', encoding='utf-8') as f:
-            f.write(f'\n=== {timestamp} ===\n')
-            f.write(f'CWD: {cwd}\n')
-            f.write(f'CLAUDE_PROJECT_DIR: {project_dir}\n')
-            f.write(f'CLAUDE_HOOK_DEBUG_ENABLED: {debug_enabled}\n')
-            f.write(f'Python: {python_exe}\n')
-            f.writelines(f'{key}: {val}\n' for key, val in env_vars.items())
-    except Exception as e:
-        # Write failure reason to a fallback file
-        try:
-            timestamp_str = _marker_datetime.datetime.now(_marker_datetime.UTC).isoformat()
-            temp_dir_fallback = _marker_os.environ.get('TEMP', _marker_os.environ.get('TMP', '/tmp'))
-            with open(_marker_os.path.join(temp_dir_fallback, 'marker_write_failed.txt'), 'a') as f:
-                f.write(f'{timestamp_str}: {type(e).__name__}: {e}\n')
-        except Exception:
-            pass
-
-
-_write_invocation_marker()
-# END INVOCATION MARKER
-
 # /// script
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
@@ -54,7 +6,7 @@ _write_invocation_marker()
 #   "pyyaml",
 # ]
 # ///
-'''
+"""
 User Prompt Context Saver Hook for Claude Code.
 
 This hook captures user prompts from UserPromptSubmit events and stores them
@@ -65,7 +17,7 @@ requests, so this hook cannot save image content to the context server. Only
 text prompts are captured and stored.
 
 Trigger: UserPromptSubmit
-'''
+"""
 
 import asyncio
 import ctypes
@@ -83,9 +35,10 @@ from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
+
+from fastmcp import Client
 
 
 def _load_config_loader() -> ModuleType:
@@ -97,35 +50,6 @@ def _load_config_loader() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-# Try to import FastMCP - track availability
-_fastmcp_import_error: BaseException | None = None
-_fastmcp_import_traceback: str = ''
-try:
-    from fastmcp import Client
-except BaseException as e:
-    _fastmcp_import_error = e
-    _fastmcp_import_traceback = traceback.format_exc()
-
-    # Write import failure to marker file immediately
-    try:
-        temp_dir = os.environ.get('TEMP', os.environ.get('TMP', '/tmp'))
-        error_file = os.path.join(temp_dir, 'user_prompt_context_saver_import_error.txt')
-        with open(error_file, 'a', encoding='utf-8') as f:
-            f.write(f'[{datetime.now(tz=UTC).isoformat()}] FastMCP import failed: {type(e).__name__}: {e}\n')
-            f.write(f'Traceback:\n{_fastmcp_import_traceback}\n')
-    except Exception:
-        pass
-
-    if TYPE_CHECKING:
-        from fastmcp import Client
-    else:
-
-        class _DummyClient:
-            """Dummy Client class for when FastMCP is unavailable."""
-
-        Client = _DummyClient
 
 
 # Check if logging is enabled (module-level check, executed once)
@@ -307,13 +231,7 @@ log_always(f"CLAUDE_HOOK_DEBUG_FILE: {os.environ.get('CLAUDE_HOOK_DEBUG_FILE', '
 log_always(f'Log file location: {_LOG_FILE}')
 log_always(f'stdin isatty: {sys.stdin.isatty()}')
 
-# Check FastMCP availability
-if _fastmcp_import_error is not None:
-    log_always(f'FastMCP not available: {_fastmcp_import_error}', level='ERROR')
-    log_always('Exiting: FastMCP import failed')
-    sys.exit(0)
-
-log_always('FastMCP available')
+log_always('FastMCP Client imported successfully')
 
 
 def _warmup_uvx_cache() -> None:
