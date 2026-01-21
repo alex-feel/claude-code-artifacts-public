@@ -4,7 +4,6 @@
 # dependencies = [
 #   "fastmcp>=2.10.5",
 #   "pyyaml",
-#   "httpx",
 # ]
 # ///
 """
@@ -943,14 +942,15 @@ class SyncMCPClient:
         return result
 
 
-class HTTPMCPClient:
+class FastMCPHttpClient:
     """
-    HTTP-based MCP client for connecting to remote MCP servers.
+    HTTP-based MCP client using FastMCP's StreamableHttpTransport.
 
-    This client uses httpx to send POST requests to an MCP server endpoint,
-    bypassing the need to spawn a local subprocess via stdio transport.
+    This client uses the official FastMCP Client library for HTTP communication,
+    providing robust protocol handling, automatic retries, and proper error management.
 
-    The MCP protocol over HTTP uses JSON-RPC style requests.
+    The FastMCP Client is async-only, so this class wraps operations with asyncio.run()
+    for synchronous hook execution.
     """
 
     def __init__(
@@ -962,7 +962,7 @@ class HTTPMCPClient:
         config: dict[str, Any] | None = None,
     ) -> None:
         """
-        Initialize the HTTP MCP client.
+        Initialize the FastMCP HTTP client.
 
         Args:
             url: The MCP server endpoint URL
@@ -977,7 +977,7 @@ class HTTPMCPClient:
         self.max_retries = max_retries
         self.config = config or DEFAULT_CONFIG
         log_always(
-            f'HTTPMCPClient initialized: url={url}, timeout={timeout}, '
+            f'FastMCPHttpClient initialized: url={url}, timeout={timeout}, '
             f'max_retries={max_retries}',
         )
 
@@ -986,9 +986,14 @@ class HTTPMCPClient:
         test_json = json.dumps({'thread_id': thread_id, 'source': source, 'text': text})
         return len(test_json.encode('utf-8'))
 
-    def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
+    async def _store_context_async(
+        self,
+        thread_id: str,
+        source: str,
+        text: str,
+    ) -> dict[str, Any]:
         """
-        Store context via HTTP POST request to the MCP server.
+        Store context asynchronously using FastMCP Client.
 
         Args:
             thread_id: The thread/session identifier
@@ -999,95 +1004,117 @@ class HTTPMCPClient:
             The server response as a dictionary
 
         Raises:
-            RuntimeError: If all HTTP request retries are exhausted
+            RuntimeError: If all retry attempts are exhausted
         """
-        import httpx as httpx_module
+        from fastmcp.client.transports import StreamableHttpTransport
+        from fastmcp.exceptions import ToolError as FastMCPToolError
 
-        log_always(f'HTTPMCPClient.store_context: thread_id={thread_id}, source={source}, text_len={len(text)}')
+        log_always(f'_store_context_async: thread_id={thread_id}, source={source}, text_len={len(text)}')
 
         # Normalize Windows line endings
         normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
-
-        # Build MCP tool call request using JSON-RPC style
-        payload = {
-            'jsonrpc': '2.0',
-            'method': 'tools/call',
-            'params': {
-                'name': 'store_context',
-                'arguments': {
-                    'thread_id': thread_id,
-                    'source': source,
-                    'text': normalized_text,
-                },
-            },
-            'id': 1,
-        }
 
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
             try:
-                log_always(f'HTTP request attempt {attempt + 1}/{self.max_retries}')
+                log_always(f'FastMCP HTTP attempt {attempt + 1}/{self.max_retries}')
 
-                with httpx_module.Client(timeout=self.timeout) as client:
-                    response = client.post(
-                        self.url,
-                        json=payload,
-                        headers={
-                            'Content-Type': 'application/json',
-                            **self.headers,
-                        },
-                    )
-                    response.raise_for_status()
+                # Create transport with custom headers
+                transport = StreamableHttpTransport(
+                    url=self.url,
+                    headers=self.headers or None,
+                )
 
-                    result = response.json()
-                    log_always(f'HTTP response received: {type(result).__name__}')
+                # Use async context manager for proper connection lifecycle
+                async with asyncio.timeout(self.timeout):
+                    async with Client(transport, timeout=self.timeout) as client:
+                        log_always('FastMCP client connected successfully')
 
-                    # Extract result from JSON-RPC response
-                    if 'result' in result:
-                        return cast(dict[str, Any], result['result'])
-                    if 'error' in result:
-                        error_msg = result['error'].get('message', 'Unknown error')
-                        raise RuntimeError(f'MCP error: {error_msg}')
-                    return cast(dict[str, Any], result)
+                        # Call store_context tool
+                        result = await client.call_tool(
+                            'store_context',
+                            {
+                                'thread_id': thread_id,
+                                'source': source,
+                                'text': normalized_text,
+                            },
+                            timeout=self.timeout,
+                            raise_on_error=True,
+                        )
 
-            except httpx_module.TimeoutException as e:
+                        log_always(f'FastMCP call_tool returned: {type(result).__name__}')
+
+                        # Extract result data
+                        if hasattr(result, 'data') and result.data is not None:
+                            return cast(dict[str, Any], result.data)
+                        if hasattr(result, 'content') and result.content:
+                            # Fallback to content block parsing
+                            first_content = result.content[0]
+                            content_text = getattr(first_content, 'text', None)
+                            if content_text is not None:
+                                try:
+                                    return cast(dict[str, Any], json.loads(str(content_text)))
+                                except json.JSONDecodeError:
+                                    return {'success': True, 'raw_content': str(content_text)}
+                        return {'success': True}
+
+            except FastMCPToolError as e:
                 last_error = e
                 log_always(
-                    f'HTTP request attempt {attempt + 1}/{self.max_retries} timed out',
+                    f'FastMCP attempt {attempt + 1}/{self.max_retries} tool error: {e}',
                     level='WARN',
                 )
-            except httpx_module.HTTPStatusError as e:
-                last_error = e
+            except TimeoutError:
+                last_error = TimeoutError(f'Request timed out after {self.timeout}s')
                 log_always(
-                    f'HTTP request attempt {attempt + 1}/{self.max_retries} failed: '
-                    f'{e.response.status_code} {e.response.text}',
+                    f'FastMCP attempt {attempt + 1}/{self.max_retries} timed out',
                     level='WARN',
                 )
             except Exception as e:
                 last_error = e
                 log_always(
-                    f'HTTP request attempt {attempt + 1}/{self.max_retries} failed: '
+                    f'FastMCP attempt {attempt + 1}/{self.max_retries} failed: '
                     f'{type(e).__name__}: {e}',
                     level='WARN',
                 )
 
             # Exponential backoff before retry
             if attempt < self.max_retries - 1:
-                backoff_delay = 1.0 * (2**attempt)
+                backoff_delay = 1.0 * (2 ** attempt)
                 log_always(f'Waiting {backoff_delay}s before retry')
-                time.sleep(backoff_delay)
+                await asyncio.sleep(backoff_delay)
 
         # All retries exhausted
-        error_msg = f'All {self.max_retries} HTTP request attempts failed'
+        error_msg = f'All {self.max_retries} FastMCP HTTP attempts failed'
         if last_error:
             error_msg = f'{error_msg}: {type(last_error).__name__}: {last_error}'
         log_always(error_msg, level='ERROR')
-        report_error('HTTP_MCP_CONNECTION_EXHAUSTED', error_msg)
+        report_error('FASTMCP_HTTP_CONNECTION_EXHAUSTED', error_msg)
 
         if last_error:
             raise last_error
         raise RuntimeError(error_msg)
+
+    def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
+        """
+        Store context via FastMCP HTTP client synchronously.
+
+        This method wraps the async FastMCP client with asyncio.run() for
+        synchronous hook execution.
+
+        Args:
+            thread_id: The thread/session identifier
+            source: The source of the context (always "user" for this hook)
+            text: The prompt text to store
+
+        Returns:
+            The server response as a dictionary
+        """
+        log_always(f'FastMCPHttpClient.store_context: thread_id={thread_id}, source={source}, text_len={len(text)}')
+        result = asyncio.run(self._store_context_async(thread_id, source, text))
+        log_always('FastMCPHttpClient.store_context completed successfully')
+        return result
 
 
 def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
@@ -1313,18 +1340,18 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     raise RuntimeError('Failed to create MCP client after all retries')
 
 
-def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | HTTPMCPClient:
+def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | FastMCPHttpClient:
     """
     Create appropriate MCP client based on transport configuration.
 
     This factory function selects between stdio transport (existing behavior via uvx)
-    and HTTP transport (for remote MCP servers like aegis-corporate.yaml).
+    and HTTP transport (using FastMCP Client for remote MCP servers).
 
     Args:
         config: Configuration dictionary with mcp_server settings
 
     Returns:
-        Either SyncMCPClient (stdio) or HTTPMCPClient (http)
+        Either SyncMCPClient (stdio) or FastMCPHttpClient (http)
 
     Raises:
         ValueError: If transport type is invalid or required fields missing
@@ -1335,7 +1362,7 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | HTTPMCPClient:
     log_always(f'Creating MCP client with transport: {transport}')
 
     if transport == 'http':
-        # HTTP transport for remote MCP servers
+        # HTTP transport using FastMCP Client
         url = server_config.get('url')
         if not url:
             raise ValueError("mcp_server.url is required when transport is 'http'")
@@ -1345,9 +1372,9 @@ def create_mcp_client(config: dict[str, Any]) -> SyncMCPClient | HTTPMCPClient:
         headers = server_config.get('headers', {})
         max_retries = mcp_config.get('max_retries', 3)
 
-        log_always(f'HTTP transport: url={url}, timeout={timeout}, max_retries={max_retries}')
+        log_always(f'HTTP transport (FastMCP): url={url}, timeout={timeout}, max_retries={max_retries}')
 
-        return HTTPMCPClient(
+        return FastMCPHttpClient(
             url=url,
             timeout=timeout,
             headers=headers,
