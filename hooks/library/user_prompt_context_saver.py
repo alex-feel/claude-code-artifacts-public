@@ -144,7 +144,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 def _get_log_file() -> Path:
     """
-    Get log file location with multiple fallbacks for reliability.
+    Get log file location with multiple fallbacks and diagnostic reporting.
 
     Fallback chain:
     1. CLAUDE_HOOK_DEBUG_FILE environment variable
@@ -155,32 +155,48 @@ def _get_log_file() -> Path:
     Returns:
         Path to the log file (guaranteed to return a valid path)
     """
+    import sys
+    from contextlib import suppress
+
+    def _diagnostic(msg: str) -> None:
+        """Write diagnostic to stderr (unconditionally)."""
+        with suppress(Exception):
+            print(f'[LOG PATH DIAGNOSTIC] {msg}', file=sys.stderr, flush=True)
+
     # Fallback 1: Explicit debug file location
-    if os.environ.get('CLAUDE_HOOK_DEBUG_FILE'):
-        return Path(os.environ['CLAUDE_HOOK_DEBUG_FILE'])
+    debug_file = os.environ.get('CLAUDE_HOOK_DEBUG_FILE')
+    if debug_file:
+        _diagnostic(f'Using CLAUDE_HOOK_DEBUG_FILE: {debug_file}')
+        return Path(debug_file)
 
     # Fallback 2: Project directory
-    if os.environ.get('CLAUDE_PROJECT_DIR'):
-        project_dir = Path(os.environ['CLAUDE_PROJECT_DIR'])
-        claude_dir = project_dir / '.claude'
+    project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
+    if project_dir:
+        claude_dir = Path(project_dir) / '.claude'
         try:
             claude_dir.mkdir(parents=True, exist_ok=True)
-            return claude_dir / '.hook_debug.log'
-        except Exception:
-            pass  # Fall through to next fallback
+            log_path = claude_dir / '.hook_debug.log'
+            _diagnostic(f'Using project dir: {log_path}')
+            return log_path
+        except Exception as e:
+            _diagnostic(f'Project dir fallback failed: {e}')
 
     # Fallback 3: User home directory
     try:
         home = Path.home()
         log_dir = home / '.claude' / 'hook_logs'
         log_dir.mkdir(parents=True, exist_ok=True)
-        return log_dir / 'user_prompt_context_saver.log'
-    except Exception:
-        pass  # Fall through to final fallback
+        log_path = log_dir / 'user_prompt_context_saver.log'
+        _diagnostic(f'Using home dir: {log_path}')
+        return log_path
+    except Exception as e:
+        _diagnostic(f'Home dir fallback failed: {e}')
 
     # Fallback 4: System temp directory (always works)
     temp_dir = Path(tempfile.gettempdir())
-    return temp_dir / 'claude_hook_user_prompt_context_saver.log'
+    log_path = temp_dir / 'claude_hook_user_prompt_context_saver.log'
+    _diagnostic(f'Using temp dir: {log_path}')
+    return log_path
 
 
 # Initialize log file IMMEDIATELY
@@ -1047,7 +1063,23 @@ class FastMCPHttpClient:
 
                         # Extract result data
                         if hasattr(result, 'data') and result.data is not None:
-                            return cast(dict[str, Any], result.data)
+                            data = result.data
+                            # Handle Pydantic models (FastMCP returns Root model)
+                            if hasattr(data, 'model_dump'):
+                                log_always(f'Converting Pydantic model to dict: {type(data).__name__}')
+                                return cast(dict[str, Any], data.model_dump())
+                            # Handle dict-like objects
+                            if isinstance(data, dict):
+                                return cast(dict[str, Any], data)
+                            # Fallback: try to convert to dict
+                            try:
+                                return cast(dict[str, Any], dict(data))
+                            except (TypeError, ValueError):
+                                log_always(
+                                    f'Could not convert result.data to dict: {type(data).__name__}',
+                                    level='WARN',
+                                )
+                                return {'success': True, 'raw_data': str(data)}
                         if hasattr(result, 'content') and result.content:
                             # Fallback to content block parsing
                             first_content = result.content[0]
