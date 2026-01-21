@@ -1,4 +1,52 @@
 #!/usr/bin/env python3
+# INVOCATION MARKER - MUST be at very top before any imports
+# This diagnostic writes a marker file BEFORE any code that could fail
+import datetime as _marker_datetime
+import os as _marker_os
+import sys as _marker_sys
+
+
+def _write_invocation_marker() -> None:
+    """Write invocation marker to TEMP directory (guaranteed writable)."""
+    try:
+        temp_dir = _marker_os.environ.get('TEMP', _marker_os.environ.get('TMP', '/tmp'))
+        marker_file = _marker_os.path.join(temp_dir, 'user_prompt_context_saver_invoked.txt')
+
+        timestamp = _marker_datetime.datetime.now(_marker_datetime.UTC).isoformat()
+        cwd = _marker_os.getcwd()
+        project_dir = _marker_os.environ.get('CLAUDE_PROJECT_DIR', 'NOT_SET')
+        debug_enabled = _marker_os.environ.get('CLAUDE_HOOK_DEBUG_ENABLED', 'NOT_SET')
+        python_exe = _marker_sys.executable
+
+        # Capture key environment variables
+        env_vars = {
+            'PATH': _marker_os.environ.get('PATH', 'NOT_SET')[:200] + '...',
+            'PYTHONPATH': _marker_os.environ.get('PYTHONPATH', 'NOT_SET'),
+            'HOME': _marker_os.environ.get('HOME', _marker_os.environ.get('USERPROFILE', 'NOT_SET')),
+            'UV_CACHE_DIR': _marker_os.environ.get('UV_CACHE_DIR', 'NOT_SET'),
+        }
+
+        with open(marker_file, 'a', encoding='utf-8') as f:
+            f.write(f'\n=== {timestamp} ===\n')
+            f.write(f'CWD: {cwd}\n')
+            f.write(f'CLAUDE_PROJECT_DIR: {project_dir}\n')
+            f.write(f'CLAUDE_HOOK_DEBUG_ENABLED: {debug_enabled}\n')
+            f.write(f'Python: {python_exe}\n')
+            f.writelines(f'{key}: {val}\n' for key, val in env_vars.items())
+    except Exception as e:
+        # Write failure reason to a fallback file
+        try:
+            timestamp_str = _marker_datetime.datetime.now(_marker_datetime.UTC).isoformat()
+            temp_dir_fallback = _marker_os.environ.get('TEMP', _marker_os.environ.get('TMP', '/tmp'))
+            with open(_marker_os.path.join(temp_dir_fallback, 'marker_write_failed.txt'), 'a') as f:
+                f.write(f'{timestamp_str}: {type(e).__name__}: {e}\n')
+        except Exception:
+            pass
+
+
+_write_invocation_marker()
+# END INVOCATION MARKER
+
 # /// script
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
@@ -6,7 +54,7 @@
 #   "pyyaml",
 # ]
 # ///
-"""
+'''
 User Prompt Context Saver Hook for Claude Code.
 
 This hook captures user prompts from UserPromptSubmit events and stores them
@@ -17,7 +65,7 @@ requests, so this hook cannot save image content to the context server. Only
 text prompts are captured and stored.
 
 Trigger: UserPromptSubmit
-"""
+'''
 
 import asyncio
 import ctypes
@@ -52,11 +100,24 @@ def _load_config_loader() -> ModuleType:
 
 
 # Try to import FastMCP - track availability
-_fastmcp_import_error: Exception | None = None
+_fastmcp_import_error: BaseException | None = None
+_fastmcp_import_traceback: str = ''
 try:
     from fastmcp import Client
-except ImportError as e:
+except BaseException as e:
     _fastmcp_import_error = e
+    _fastmcp_import_traceback = traceback.format_exc()
+
+    # Write import failure to marker file immediately
+    try:
+        temp_dir = os.environ.get('TEMP', os.environ.get('TMP', '/tmp'))
+        error_file = os.path.join(temp_dir, 'user_prompt_context_saver_import_error.txt')
+        with open(error_file, 'a', encoding='utf-8') as f:
+            f.write(f'[{datetime.now(tz=UTC).isoformat()}] FastMCP import failed: {type(e).__name__}: {e}\n')
+            f.write(f'Traceback:\n{_fastmcp_import_traceback}\n')
+    except Exception:
+        pass
+
     if TYPE_CHECKING:
         from fastmcp import Client
     else:
@@ -661,6 +722,11 @@ class SyncMCPClient:
                         result = await client.call_tool('store_context', params)
                         log_always(f'store_context returned: {type(result).__name__}')
 
+                        # Use structured_content if available (canonical FastMCP approach)
+                        if hasattr(result, 'structured_content') and result.structured_content is not None:
+                            log_always('Using structured_content for stdio response')
+                            return cast(dict[str, Any], result.structured_content)
+
                         return cast(dict[str, Any], result)
 
             except TimeoutError:
@@ -1061,35 +1127,61 @@ class FastMCPHttpClient:
 
                         log_always(f'FastMCP call_tool returned: {type(result).__name__}')
 
-                        # Extract result data
+                        # PRIORITY 1: Use structured_content (canonical FastMCP approach)
+                        # FastMCP docs: "Raw structured JSON is also available via result.structured_content"
+                        if hasattr(result, 'structured_content') and result.structured_content is not None:
+                            log_always(
+                                f'Using structured_content (dict) for response: '
+                                f'{type(result.structured_content).__name__}',
+                            )
+                            # Explicit type annotation to satisfy both mypy and pyright
+                            structured_dict: dict[str, Any] = result.structured_content
+                            return structured_dict
+
+                        # PRIORITY 2: Handle result.data with comprehensive fallback
                         if hasattr(result, 'data') and result.data is not None:
                             data = result.data
-                            # Handle Pydantic models (FastMCP returns Root model)
-                            if hasattr(data, 'model_dump'):
-                                log_always(f'Converting Pydantic model to dict: {type(data).__name__}')
+
+                            # Pydantic v2
+                            if hasattr(data, 'model_dump') and callable(data.model_dump):
+                                log_always(f'Using model_dump() for: {type(data).__name__}')
                                 return cast(dict[str, Any], data.model_dump())
-                            # Handle dict-like objects
+
+                            # Pydantic v1
+                            if hasattr(data, 'dict') and callable(data.dict):
+                                log_always(f'Using dict() for: {type(data).__name__}')
+                                return cast(dict[str, Any], data.dict())
+
+                            # RootModel with .root attribute
+                            if hasattr(data, 'root'):
+                                root_data = data.root
+                                if isinstance(root_data, dict):
+                                    log_always(f'Using .root for: {type(data).__name__}')
+                                    return cast(dict[str, Any], root_data)
+
+                            # Direct dict
                             if isinstance(data, dict):
+                                log_always('Using direct dict')
                                 return cast(dict[str, Any], data)
-                            # Fallback: try to convert to dict
-                            try:
-                                return cast(dict[str, Any], dict(data))
-                            except (TypeError, ValueError):
-                                log_always(
-                                    f'Could not convert result.data to dict: {type(data).__name__}',
-                                    level='WARN',
-                                )
-                                return {'success': True, 'raw_data': str(data)}
+
+                            # Final fallback - log as INFO not WARN (this path is acceptable)
+                            log_always(f'Using string fallback for: {type(data).__name__}')
+                            return {'success': True, 'raw_data': str(data)}
+
+                        # PRIORITY 3: Fallback to content block parsing
                         if hasattr(result, 'content') and result.content:
-                            # Fallback to content block parsing
                             first_content = result.content[0]
                             content_text = getattr(first_content, 'text', None)
                             if content_text is not None:
                                 try:
+                                    log_always('Using content block parsing')
                                     return cast(dict[str, Any], json.loads(str(content_text)))
                                 except json.JSONDecodeError:
                                     return {'success': True, 'raw_content': str(content_text)}
-                        return {'success': True}
+
+                        # No usable data
+                        log_always('[WARN] No structured_content, data, or content available')
+                        return {'success': False, 'error': 'No response data available'}
 
             except FastMCPToolError as e:
                 last_error = e
