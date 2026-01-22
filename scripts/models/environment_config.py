@@ -45,7 +45,7 @@ class MCPServerHTTP(BaseModel):
     """MCP server configuration with HTTP/SSE transport."""
 
     name: str = Field(..., description='Server name')
-    scope: Literal['user', 'project'] = Field('user', description='Scope of the server')
+    scope: Literal['user', 'project', 'profile'] = Field('user', description='Scope of the server')
     transport: Literal['http', 'sse'] = Field(..., description='Transport type')
     url: str = Field(..., description='Server URL')
     header: str | None = Field(None, description='Optional authentication header')
@@ -56,7 +56,7 @@ class MCPServerStdio(BaseModel):
     """MCP server configuration with stdio transport."""
 
     name: str = Field(..., description='Server name')
-    scope: Literal['user', 'project'] = Field('user', description='Scope of the server')
+    scope: Literal['user', 'project', 'profile'] = Field('user', description='Scope of the server')
     command: str = Field(..., description='Command to execute')
     env: str | list[str] | None = Field(None, description='Optional environment variables (string or list)')
 
