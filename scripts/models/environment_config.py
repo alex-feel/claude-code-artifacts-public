@@ -15,6 +15,10 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
+# Type alias for MCP server scope - can be single value, list, or comma-separated
+ScopeValue = str | list[str]
+VALID_SCOPES = frozenset({'user', 'local', 'project', 'profile'})
+
 
 def _extract_basename(path_or_url: str) -> str:
     """Extract the basename from a URL or file path.
@@ -41,24 +45,134 @@ def _extract_basename(path_or_url: str) -> str:
     return parts[-1] if parts else path_or_url
 
 
+def _normalize_scope(scope_value: str | list[str] | None) -> list[str]:
+    """Normalize scope value to a list of lowercase scope strings.
+
+    Supports multiple input formats:
+    - None -> ['user'] (default, backward compatible)
+    - 'user' -> ['user'] (single string)
+    - 'User' -> ['user'] (case normalization)
+    - 'user, profile' -> ['user', 'profile'] (comma-separated string)
+    - ['user', 'profile'] -> ['user', 'profile'] (list passthrough)
+    - ['User', 'PROFILE'] -> ['user', 'profile'] (list with case normalization)
+
+    Args:
+        scope_value: The scope value to normalize.
+
+    Returns:
+        List of normalized scope strings.
+
+    Raises:
+        ValueError: If any scope value is invalid.
+    """
+    if scope_value is None:
+        return ['user']
+
+    if isinstance(scope_value, str):
+        # Handle comma-separated string
+        if ',' in scope_value:
+            scopes = [s.strip().lower() for s in scope_value.split(',') if s.strip()]
+        else:
+            scopes = [scope_value.strip().lower()]
+    else:
+        # scope_value is list[str] after type narrowing (str and None already handled)
+        scopes = [s.strip().lower() for s in scope_value if s.strip()]
+
+    # Validate individual scope values
+    for scope in scopes:
+        if scope not in VALID_SCOPES:
+            raise ValueError(
+                f"Invalid scope '{scope}'. Valid scopes are: {sorted(VALID_SCOPES)}",
+            )
+
+    # Check for duplicates
+    if len(scopes) != len(set(scopes)):
+        raise ValueError(f'Duplicate scope values are not allowed: {scopes}')
+
+    return scopes
+
+
+def _validate_scope_combination(scopes: list[str]) -> tuple[bool, str | None]:
+    """Validate scope combinations.
+
+    Rules:
+    - Single scope values always valid
+    - Combined scopes MUST include 'profile' for meaningful combination
+    - Pure non-profile combinations are INVALID (they overlap at runtime)
+    - Profile + multiple non-profile scopes trigger a WARNING
+
+    Args:
+        scopes: List of normalized scope strings.
+
+    Returns:
+        Tuple of (is_valid, message_or_none):
+        - False + message = ERROR description
+        - True + message = WARNING
+        - True + None = fully valid
+    """
+    if len(scopes) <= 1:
+        return True, None
+
+    # Combined scopes must include profile
+    if 'profile' not in scopes:
+        non_profile = [s for s in scopes if s != 'profile']
+        return False, (
+            f'Combined scopes {scopes} are invalid. '
+            f'Non-profile scopes ({non_profile}) overlap at runtime. '
+            "Include 'profile' scope for meaningful combination."
+        )
+
+    # Profile + multiple non-profile scopes: valid but warn
+    non_profile = [s for s in scopes if s != 'profile']
+    if len(non_profile) > 1:
+        return True, (
+            f'Combined scopes {scopes} include multiple non-profile scopes ({non_profile}). '
+            'These scopes may overlap at runtime.'
+        )
+
+    return True, None
+
+
 class MCPServerHTTP(BaseModel):
     """MCP server configuration with HTTP/SSE transport."""
 
     name: str = Field(..., description='Server name')
-    scope: Literal['user', 'project', 'profile'] = Field('user', description='Scope of the server')
+    scope: str | list[str] = Field('user', description='Scope of the server (user, local, project, profile, or combined)')
     transport: Literal['http', 'sse'] = Field(..., description='Transport type')
     url: str = Field(..., description='Server URL')
     header: str | None = Field(None, description='Optional authentication header')
     env: str | list[str] | None = Field(None, description='Optional environment variables (string or list)')
+
+    @field_validator('scope')
+    @classmethod
+    def validate_scope(cls, v: str | list[str]) -> str | list[str]:
+        """Validate and normalize scope value."""
+        scopes = _normalize_scope(v)
+        is_valid, message = _validate_scope_combination(scopes)
+        if not is_valid:
+            raise ValueError(message)
+        # Return original format for backward compatibility (single string if single scope)
+        return scopes[0] if len(scopes) == 1 else scopes
 
 
 class MCPServerStdio(BaseModel):
     """MCP server configuration with stdio transport."""
 
     name: str = Field(..., description='Server name')
-    scope: Literal['user', 'project', 'profile'] = Field('user', description='Scope of the server')
+    scope: str | list[str] = Field('user', description='Scope of the server (user, local, project, profile, or combined)')
     command: str = Field(..., description='Command to execute')
     env: str | list[str] | None = Field(None, description='Optional environment variables (string or list)')
+
+    @field_validator('scope')
+    @classmethod
+    def validate_scope(cls, v: str | list[str]) -> str | list[str]:
+        """Validate and normalize scope value."""
+        scopes = _normalize_scope(v)
+        is_valid, message = _validate_scope_combination(scopes)
+        if not is_valid:
+            raise ValueError(message)
+        # Return original format for backward compatibility (single string if single scope)
+        return scopes[0] if len(scopes) == 1 else scopes
 
 
 class HookEvent(BaseModel):
