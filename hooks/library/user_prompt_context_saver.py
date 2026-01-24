@@ -26,6 +26,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -682,6 +683,7 @@ class SyncMCPClient:
         thread_id: str,
         source: str,
         text: str,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Store context asynchronously using the MCP server with automatic chunking.
@@ -698,6 +700,7 @@ class SyncMCPClient:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
             text: The prompt text to store
+            metadata: Optional metadata to include with the context
 
         Returns:
             The server response as a dictionary
@@ -709,7 +712,7 @@ class SyncMCPClient:
         # If message is small enough, send directly
         if message_size <= _MAX_MESSAGE_SIZE:
             log_always('Message size within limits, sending directly')
-            return await self._store_single_context_async(thread_id, source, text)
+            return await self._store_single_context_async(thread_id, source, text, metadata)
 
         # Message is too large, need to chunk it
         log_always(
@@ -924,7 +927,13 @@ class SyncMCPClient:
             raise last_error
         raise RuntimeError(error_msg)
 
-    def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
+    def store_context(
+        self,
+        thread_id: str,
+        source: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Store context synchronously.
 
@@ -932,12 +941,13 @@ class SyncMCPClient:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
             text: The prompt text to store
+            metadata: Optional metadata to include with the context
 
         Returns:
             The server response as a dictionary
         """
         log_always(f'store_context called: thread_id={thread_id}, source={source}, text_len={len(text)}')
-        result = self._run_async(self._store_context_async(thread_id, source, text))
+        result = self._run_async(self._store_context_async(thread_id, source, text, metadata))
         log_always('store_context completed successfully')
         return result
 
@@ -991,6 +1001,7 @@ class FastMCPHttpClient:
         thread_id: str,
         source: str,
         text: str,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Store context asynchronously using FastMCP Client.
@@ -999,6 +1010,7 @@ class FastMCPHttpClient:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
             text: The prompt text to store
+            metadata: Optional metadata to include with the context
 
         Returns:
             The server response as a dictionary
@@ -1031,14 +1043,19 @@ class FastMCPHttpClient:
                     async with Client(transport, timeout=self.timeout) as client:
                         log_always('FastMCP client connected successfully')
 
+                        # Build call parameters
+                        call_params: dict[str, Any] = {
+                            'thread_id': thread_id,
+                            'source': source,
+                            'text': normalized_text,
+                        }
+                        if metadata:
+                            call_params['metadata'] = metadata
+
                         # Call store_context tool
                         result = await client.call_tool(
                             'store_context',
-                            {
-                                'thread_id': thread_id,
-                                'source': source,
-                                'text': normalized_text,
-                            },
+                            call_params,
                             timeout=self.timeout,
                             raise_on_error=True,
                         )
@@ -1138,7 +1155,13 @@ class FastMCPHttpClient:
             raise last_error
         raise RuntimeError(error_msg)
 
-    def store_context(self, thread_id: str, source: str, text: str) -> dict[str, Any]:
+    def store_context(
+        self,
+        thread_id: str,
+        source: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Store context via FastMCP HTTP client synchronously.
 
@@ -1149,14 +1172,99 @@ class FastMCPHttpClient:
             thread_id: The thread/session identifier
             source: The source of the context (always "user" for this hook)
             text: The prompt text to store
+            metadata: Optional metadata to include with the context
 
         Returns:
             The server response as a dictionary
         """
         log_always(f'FastMCPHttpClient.store_context: thread_id={thread_id}, source={source}, text_len={len(text)}')
-        result = asyncio.run(self._store_context_async(thread_id, source, text))
+        result = asyncio.run(self._store_context_async(thread_id, source, text, metadata))
         log_always('FastMCPHttpClient.store_context completed successfully')
         return result
+
+
+def get_worktree_info(project_dir: str) -> dict[str, Any]:
+    """Get worktree information for context metadata.
+
+    Provides canonical project name from git remote URL and worktree metadata
+    for proper context isolation across parallel worktree sessions.
+
+    Fallback chain for project name:
+    1. Parse repo name from git remote URL (origin -> upstream)
+    2. Basename of git toplevel directory
+    3. Current directory basename
+
+    Args:
+        project_dir: Project directory path.
+
+    Returns:
+        Dictionary with:
+        - project: Canonical project name
+        - worktree_id: Worktree directory name (None if not git repo)
+        - worktree_path: Absolute path to worktree (None if not git repo)
+        - is_linked_worktree: Boolean for linked worktree (None if not git repo)
+    """
+
+    def run_git(args: list[str]) -> str | None:
+        """Run git command and return output, or None on failure."""
+        try:
+            result = subprocess.run(
+                ['git', *args],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except (subprocess.SubprocessError, OSError):
+            return None
+
+    # Get git common dir and toplevel
+    git_common_dir = run_git(['rev-parse', '--git-common-dir'])
+    git_toplevel = run_git(['rev-parse', '--show-toplevel'])
+
+    if not git_toplevel:
+        # Not a git repository - use directory name as project name
+        return {
+            'project': Path(project_dir).name,
+            'worktree_id': None,
+            'worktree_path': None,
+            'is_linked_worktree': None,
+        }
+
+    toplevel_path = Path(git_toplevel).resolve()
+
+    # Detect linked worktree
+    # For main worktree: git_common_dir is relative '.git' or absolute path to .git
+    # For linked worktree: git_common_dir points to main repo's .git directory
+    is_linked = False
+    if git_common_dir:
+        common_path = Path(git_common_dir)
+        if common_path.is_absolute():
+            expected_git_dir = toplevel_path / '.git'
+            is_linked = common_path.resolve() != expected_git_dir.resolve()
+        else:
+            is_linked = git_common_dir not in ['.git', './.git']
+
+    # Get canonical project name from remote URL with fallback chain
+    project_name = toplevel_path.name  # Default fallback to toplevel dir name
+    for remote in ['origin', 'upstream']:
+        url = run_git(['remote', 'get-url', remote])
+        if url:
+            # Parse repo name from URL using generic pattern
+            # Supports: https://github.com/user/repo.git, git@github.com:user/repo.git, etc.
+            match = re.search(r'.*/([^/]+?)(?:\.git)?$', url.strip())
+            if match:
+                project_name = match.group(1)
+                break
+
+    return {
+        'project': project_name,
+        'worktree_id': toplevel_path.name,
+        'worktree_path': str(toplevel_path),
+        'is_linked_worktree': is_linked,
+    }
 
 
 def is_prebuilt_slash_command(prompt: str, config: dict[str, Any]) -> bool:
@@ -1557,6 +1665,23 @@ def main() -> None:
             # Create client based on transport configuration (stdio or http)
             client = create_mcp_client(config)
 
+            # Get worktree information for context metadata
+            # Provides canonical project name from git remote URL for cross-worktree consistency
+            worktree_info = get_worktree_info(claude_project_dir)
+            log_always(f'Worktree info: project={worktree_info["project"]}, worktree_id={worktree_info.get("worktree_id")}')
+
+            # Build metadata with worktree fields for context isolation
+            metadata: dict[str, Any] = {
+                'project': worktree_info['project'],
+            }
+            # Add optional worktree fields if available (git repository detected)
+            if worktree_info.get('worktree_id') is not None:
+                metadata['worktree_id'] = worktree_info['worktree_id']
+            if worktree_info.get('worktree_path') is not None:
+                metadata['worktree_path'] = worktree_info['worktree_path']
+            if worktree_info.get('is_linked_worktree') is not None:
+                metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
+
             # Store the user prompt in the context server
             # Using session_id as thread_id to group prompts by session
             log_always('Storing context in MCP server')
@@ -1564,6 +1689,7 @@ def main() -> None:
                 thread_id=session_id,
                 source='user',
                 text=prompt,
+                metadata=metadata,
             )
 
             # Check for chunked storage with partial failures and provide user feedback
