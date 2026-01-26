@@ -610,17 +610,17 @@ class SyncMCPClient:
 
         last_error: Exception | None = None
         max_retries = self.max_connection_retries
-        conn_timeout = self.connection_timeout
+        operation_timeout = self.timeout
 
         for attempt in range(max_retries):
             try:
-                log_always(f'Connection attempt {attempt + 1}/{max_retries} (timeout={conn_timeout}s)')
+                log_always(f'Connection attempt {attempt + 1}/{max_retries} (timeout={operation_timeout}s)')
 
                 transport = cast(Any, StdioTransport(cmd, args, env=env))
                 log_always('StdioTransport created')
 
                 # Wrap connection in asyncio.timeout for reliability
-                async with asyncio.timeout(conn_timeout):
+                async with asyncio.timeout(operation_timeout):
                     async with cast(Any, Client(transport)) as client:
                         # Connection health check - log successful connection
                         log_always('MCP client connected successfully (health check passed)')
@@ -649,9 +649,9 @@ class SyncMCPClient:
                         return cast(dict[str, Any], result)
 
             except TimeoutError:
-                last_error = TimeoutError(f'Connection timed out after {conn_timeout}s')
+                last_error = TimeoutError(f'Connection timed out after {operation_timeout}s')
                 log_always(
-                    f'Connection attempt {attempt + 1}/{max_retries} timed out after {conn_timeout}s',
+                    f'Connection attempt {attempt + 1}/{max_retries} timed out after {operation_timeout}s',
                     level='WARN',
                 )
             except Exception as e:
@@ -797,7 +797,7 @@ class SyncMCPClient:
         last_error: Exception | None = None
         max_retries = self.max_connection_retries
         # Extended timeout for chunked storage: base timeout * number of chunks
-        extended_timeout = self.connection_timeout * max(len(chunks), 2)
+        extended_timeout = self.timeout * max(len(chunks), 2)
 
         for conn_attempt in range(max_retries):
             try:
