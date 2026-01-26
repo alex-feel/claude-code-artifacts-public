@@ -112,7 +112,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # For stdio transport (existing behavior)
         'command': 'uvx',
         'python_version': '3.12',
-        'package': 'mcp-context-server<2.0.0',
+        'package': 'mcp-context-server[embeddings-ollama]<2.0.0',
         'entry_point': 'mcp-context-server',
         'prewarm_cache': True,  # Pre-warm uvx cache at module load
         # For http transport (used when transport: http)
@@ -257,7 +257,7 @@ def _warmup_uvx_cache() -> None:
 
     command = server_config.get('command', 'uvx')
     python_version = server_config.get('python_version', '3.12')
-    package = server_config.get('package', 'mcp-context-server<2.0.0')
+    package = server_config.get('package', 'mcp-context-server[embeddings-ollama]<2.0.0')
 
     try:
         log_always('Pre-warming uvx cache...')
@@ -1405,7 +1405,7 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
 
     server_command: str = server_config.get('command', 'uvx')
     python_version: str = server_config.get('python_version', '3.12')
-    package: str = server_config.get('package', 'mcp-context-server<2.0.0')
+    package: str = server_config.get('package', 'mcp-context-server[embeddings-ollama]<2.0.0')
     entry_point: str = server_config.get('entry_point', 'mcp-context-server')
 
     log_always('Creating MCP client with retry logic')
