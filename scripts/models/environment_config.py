@@ -19,6 +19,13 @@ from pydantic import model_validator
 ScopeValue = str | list[str]
 VALID_SCOPES = frozenset({'user', 'local', 'project', 'profile'})
 
+# Keys that are NOT allowed in user-settings due to path resolution issues
+# These keys are profile-specific and should be configured at root level
+USER_SETTINGS_EXCLUDED_KEYS: frozenset[str] = frozenset({
+    'hooks',       # Path resolution issues; profile-specific event handlers
+    'statusLine',  # Path resolution issues; profile-specific display config
+})
+
 
 def _extract_basename(path_or_url: str) -> str:
     """Extract the basename from a URL or file path.
@@ -131,6 +138,156 @@ def _validate_scope_combination(scopes: list[str]) -> tuple[bool, str | None]:
         )
 
     return True, None
+
+
+# User Settings Models (for ~/.claude/settings.json)
+
+
+class UserSettingsPermissions(BaseModel):
+    """Permissions configuration for user settings.
+
+    Configures permission rules that apply across all sessions.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra='allow')
+
+    allow: list[str] | None = None
+    ask: list[str] | None = None
+    deny: list[str] | None = None
+    additional_directories: list[str] | None = Field(None, alias='additionalDirectories')
+    default_mode: Literal['default', 'acceptEdits', 'plan', 'bypassPermissions'] | None = Field(
+        None,
+        alias='defaultMode',
+    )
+    disable_bypass_permissions_mode: str | None = Field(None, alias='disableBypassPermissionsMode')
+
+
+class UserSettingsAttribution(BaseModel):
+    """Attribution configuration for commits and PRs in user settings."""
+
+    commit: str | None = None
+    pr: str | None = None
+
+
+class FileSuggestion(BaseModel):
+    """File suggestion command configuration for @ autocomplete."""
+
+    type: Literal['command'] = 'command'
+    command: str
+
+
+class SandboxNetwork(BaseModel):
+    """Sandbox network configuration."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    allow_unix_sockets: list[str] | None = Field(None, alias='allowUnixSockets')
+    allow_local_binding: bool | None = Field(None, alias='allowLocalBinding')
+    http_proxy_port: int | None = Field(None, alias='httpProxyPort')
+    socks_proxy_port: int | None = Field(None, alias='socksProxyPort')
+
+
+class UserSettingsSandbox(BaseModel):
+    """Sandbox configuration for user settings."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool | None = None
+    auto_allow_bash_if_sandboxed: bool | None = Field(None, alias='autoAllowBashIfSandboxed')
+    excluded_commands: list[str] | None = Field(None, alias='excludedCommands')
+    allow_unsandboxed_commands: bool | None = Field(None, alias='allowUnsandboxedCommands')
+    network: SandboxNetwork | None = None
+    enable_weaker_nested_sandbox: bool | None = Field(None, alias='enableWeakerNestedSandbox')
+
+
+class UserSettings(BaseModel):
+    """User settings configuration for ~/.claude/settings.json.
+
+    These settings are written to the global user settings file and apply
+    across all sessions unless overridden by profile-specific settings.
+
+    Note: 'hooks' and 'statusLine' are NOT allowed in user-settings due to
+    path resolution issues (they are profile-specific only).
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra='allow')
+
+    # Authentication and credentials
+    api_key_helper: str | None = Field(None, alias='apiKeyHelper')
+    aws_auth_refresh: str | None = Field(None, alias='awsAuthRefresh')
+    aws_credential_export: str | None = Field(None, alias='awsCredentialExport')
+
+    # Model and behavior
+    model: str | None = None
+    language: str | None = None
+    output_style: str | None = Field(None, alias='outputStyle')
+    always_thinking_enabled: bool | None = Field(None, alias='alwaysThinkingEnabled')
+
+    # Permissions
+    permissions: UserSettingsPermissions | None = None
+
+    # Attribution
+    attribution: UserSettingsAttribution | None = None
+    include_co_authored_by: bool | None = Field(None, alias='includeCoAuthoredBy')  # Deprecated
+
+    # Announcements
+    company_announcements: list[str] | None = Field(None, alias='companyAnnouncements')
+
+    # Environment
+    env: dict[str, str] | None = None
+
+    # MCP servers
+    disabled_mcpjson_servers: list[str] | None = Field(None, alias='disabledMcpjsonServers')
+    enabled_mcpjson_servers: list[str] | None = Field(None, alias='enabledMcpjsonServers')
+    enable_all_project_mcp_servers: bool | None = Field(None, alias='enableAllProjectMcpServers')
+
+    # Hooks control
+    disable_all_hooks: bool | None = Field(None, alias='disableAllHooks')
+
+    # UI and display
+    show_turn_duration: bool | None = Field(None, alias='showTurnDuration')
+    spinner_tips_enabled: bool | None = Field(None, alias='spinnerTipsEnabled')
+    terminal_progress_bar_enabled: bool | None = Field(None, alias='terminalProgressBarEnabled')
+    respect_gitignore: bool | None = Field(None, alias='respectGitignore')
+
+    # Updates
+    auto_updates_channel: Literal['stable', 'latest'] | None = Field(None, alias='autoUpdatesChannel')
+
+    # Session management
+    cleanup_period_days: int | None = Field(None, alias='cleanupPeriodDays')
+    plans_directory: str | None = Field(None, alias='plansDirectory')
+
+    # Login
+    force_login_method: Literal['claudeai', 'console'] | None = Field(None, alias='forceLoginMethod')
+    force_login_org_uuid: str | None = Field(None, alias='forceLoginOrgUUID')
+
+    # Advanced
+    file_suggestion: FileSuggestion | None = Field(None, alias='fileSuggestion')
+    sandbox: UserSettingsSandbox | None = None
+    otel_headers_helper: str | None = Field(None, alias='otelHeadersHelper')
+
+    @field_validator('cleanup_period_days')
+    @classmethod
+    def validate_cleanup_period(cls, v: int | None) -> int | None:
+        """Validate cleanup period is non-negative."""
+        if v is not None and v < 0:
+            raise ValueError('cleanupPeriodDays must be 0 or greater')
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_excluded_keys(cls, data: dict[str, object]) -> dict[str, object]:
+        """Validate that excluded keys are not present."""
+        for key in USER_SETTINGS_EXCLUDED_KEYS:
+            if key in data:
+                raise ValueError(
+                    f"Key '{key}' is not allowed in user-settings (profile-specific only). "
+                    'Configure this in the root level of your environment YAML instead.',
+                )
+        return data
+
+
+# MCP Server Models
 
 
 class MCPServerHTTP(BaseModel):
@@ -528,6 +685,12 @@ class EnvironmentConfig(BaseModel):
         alias='os-env-variables',
         description='OS-level persistent environment variables. '
         'Set value to null to delete the variable.',
+    )
+    user_settings: UserSettings | None = Field(
+        None,
+        alias='user-settings',
+        description='User-level settings written to ~/.claude/settings.json. '
+        'These settings apply across all sessions.',
     )
 
     @field_validator('command_names')
