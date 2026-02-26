@@ -75,12 +75,12 @@ Subagents are Markdown files with three parts:
 
 Common tool configurations used by actual agents:
 
-- **Analysis-only** (code-reviewer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput`
-- **Content creation** (doc-writer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch`
-- **Full development** (test-generator, refactoring): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash`
+- **Analysis-only** (code-reviewer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, TaskCreate, TaskGet, TaskList, TaskUpdate, BashOutput`
+- **Content creation** (doc-writer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, TaskCreate, TaskGet, TaskList, TaskUpdate, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch`
+- **Full development** (test-generator, refactoring): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, TaskCreate, TaskGet, TaskList, TaskUpdate, BashOutput, Write, Edit, MultiEdit, Bash`
 - **Research-focused** (implementation-guide): Includes `mcp__context7__resolve-library-id, mcp__context7__get-library-docs, mcp__deepwiki__read_wiki_structure, mcp__deepwiki__read_wiki_contents, mcp__deepwiki__ask_question` for accessing library and repository documentation
 
-**CRITICAL**: Always start with no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput), then add others as needed.
+**CRITICAL**: Always start with no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, TaskCreate, TaskGet, TaskList, TaskUpdate, BashOutput), then add others as needed.
 
 ### MCP Server Tools
 
