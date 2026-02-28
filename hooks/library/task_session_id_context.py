@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Claude Code Hook: Task Session ID Context Integration
+Claude Code Hook: Task/Agent Session ID Context Integration
 
 This hook ensures session ID context is included in task descriptions
-when spawning subagents using the Task tool. It reads the existing session ID
+when spawning subagents using the Task/Agent tool. It reads the existing session ID
 from the .session_id file and provides guidance to the model to include it
 for better context continuity across agent hierarchy.
 
-Triggers on: PreToolUse (Task)
-Target: Task tool operations
+Triggers on: PreToolUse (Task|Agent)
+Target: Task/Agent tool operations
 Action: Guide model to include session ID context in task descriptions
 
 Exit Codes:
-- 0: Success (session ID context present, not found, or not a Task tool)
+- 0: Success (session ID context present, not found, or not a Task/Agent tool)
 - 2: Guidance provided to include session ID context (blocking)
 """
 
@@ -132,7 +132,7 @@ def main() -> None:
         if hook_event_name != 'PreToolUse':
             sys.exit(0)
 
-        if tool_name != 'Task':
+        if tool_name not in ('Task', 'Agent'):
             sys.exit(0)
 
         # Get Claude project directory
