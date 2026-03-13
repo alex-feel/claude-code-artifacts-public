@@ -34,6 +34,12 @@ except ImportError:
     yaml = None
 
 
+STANDARD_EXTENSIONS: dict[str, list[str]] = {
+    'python': ['.py'],
+    'web': ['.ts', '.tsx', '.js', '.jsx'],
+}
+
+
 def load_config(
     config_path: str | None = None,
     defaults: dict[str, Any] | None = None,
@@ -110,3 +116,38 @@ def get_config_from_argv(defaults: dict[str, Any] | None = None) -> dict[str, An
     """
     config_path = sys.argv[1] if len(sys.argv) > 1 else None
     return load_config(config_path, defaults)
+
+
+def check_file_relevance(
+    config: dict[str, Any],
+    input_data: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """Check if the edited file matches the hook's target file extensions.
+
+    Reads 'file_extensions' from config and checks against the file path
+    from the hook input data.
+
+    Args:
+        config: Hook configuration dictionary (should contain 'file_extensions' key).
+        input_data: Hook event input data (JSON from stdin).
+
+    Returns:
+        Tuple of (is_relevant, file_path).
+        is_relevant is True if file matches or no filtering configured.
+        file_path is the extracted path, or None if not found.
+    """
+    file_extensions = config.get('file_extensions')
+    if not file_extensions:
+        return True, None
+
+    tool_input = input_data.get('tool_input', {})
+    file_path = tool_input.get('file_path')
+    if not file_path:
+        tool_response = input_data.get('tool_response', {})
+        file_path = tool_response.get('filePath')
+
+    if not file_path:
+        return False, None
+
+    ext = Path(file_path).suffix.lower()
+    return ext in file_extensions, file_path

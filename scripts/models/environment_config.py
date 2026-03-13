@@ -665,6 +665,11 @@ class EnvironmentConfig(BaseModel):
         alias='always-thinking-enabled',
         description='Whether to enable always-on thinking mode for extended reasoning (default: False)',
     )
+    effort_level: Literal['low', 'medium', 'high'] | None = Field(
+        None,
+        alias='effort-level',
+        description='Effort level for adaptive reasoning. Controls how much thinking is allocated based on task complexity.',
+    )
     install_nodejs: bool | None = Field(
         None,
         alias='install-nodejs',
