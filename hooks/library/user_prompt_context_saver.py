@@ -103,8 +103,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'max_retries': 3,
         'max_connection_retries': 3,  # Retry attempts for actual MCP connection
         'connection_timeout': 30.0,  # Timeout per connection attempt (seconds)
-        'timeout_first_run': 60.0,
-        'timeout_normal': 60.0,
+        'timeout_first_run': 120.0,
+        'timeout_normal': 120.0,
     },
     'mcp_server': {
         # Transport type: 'stdio' (default, existing behavior) or 'http'
@@ -418,7 +418,7 @@ class SyncMCPClient:
     def __init__(
         self,
         server_command: list[str] | str,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
         max_connection_retries: int = 3,
         connection_timeout: float = 30.0,
         config: dict[str, Any] | None = None,
@@ -1400,8 +1400,8 @@ def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
     max_retries: int = mcp_config.get('max_retries', 3)
     max_connection_retries: int = mcp_config.get('max_connection_retries', 3)
     connection_timeout: float = mcp_config.get('connection_timeout', 30.0)
-    timeout_first_run: float = mcp_config.get('timeout_first_run', 60.0)
-    timeout_normal: float = mcp_config.get('timeout_normal', 60.0)
+    timeout_first_run: float = mcp_config.get('timeout_first_run', 120.0)
+    timeout_normal: float = mcp_config.get('timeout_normal', 120.0)
 
     server_command: str = server_config.get('command', 'uvx')
     python_version: str = server_config.get('python_version', '3.12')
