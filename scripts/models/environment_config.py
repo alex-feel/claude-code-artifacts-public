@@ -800,7 +800,7 @@ class EnvironmentConfig(BaseModel):
     @classmethod
     def validate_model(cls, v: str | None) -> str | None:
         """Validate model configuration."""
-        valid_aliases = ['default', 'sonnet', 'opus', 'haiku', 'sonnet[1m]', 'opusplan']
+        valid_aliases = ['default', 'sonnet', 'opus', 'haiku', 'opus[1m]', 'sonnet[1m]', 'opusplan']
         if v and not (v in valid_aliases or v.startswith('claude-')):
             raise ValueError(
                 f"model must be one of {valid_aliases} or a custom model name starting with 'claude-'",
