@@ -103,8 +103,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'max_retries': 3,
         'max_connection_retries': 3,  # Retry attempts for actual MCP connection
         'connection_timeout': 30.0,  # Timeout per connection attempt (seconds)
-        'timeout_first_run': 120.0,
-        'timeout_normal': 120.0,
+        'timeout_first_run': 240.0,
+        'timeout_normal': 240.0,
     },
     'mcp_server': {
         # Transport type: 'stdio' (default, existing behavior) or 'http'
