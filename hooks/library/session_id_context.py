@@ -5,7 +5,7 @@ Session ID Manager Hook for Claude Code
 This hook manages session IDs and communicates them to the model:
 1. Validates that the hook event is 'SessionStart'
 2. Takes session_id from the payload (authoritative for ALL sources)
-3. Writes session_id to .session_id file ONLY if it differs from current value
+3. Writes session_id to .context_server/.session_id file ONLY if it differs from current value
 4. Outputs unified session context message for ALL sources
 
 The session ID is always communicated to the model with guidance on how to use it
@@ -43,12 +43,12 @@ def main() -> None:
         if not claude_project_dir:
             sys.exit(0)
 
-        # Ensure .claude directory exists
-        claude_dir = os.path.join(claude_project_dir, '.claude')
-        os.makedirs(claude_dir, exist_ok=True)
+        # Ensure .context_server directory exists
+        context_server_dir = os.path.join(claude_project_dir, '.context_server')
+        os.makedirs(context_server_dir, exist_ok=True)
 
         # File path for session ID
-        session_id_file = Path(os.path.join(claude_dir, '.session_id'))
+        session_id_file = Path(os.path.join(context_server_dir, '.session_id'))
 
         # Read current session ID (if file exists)
         current_session_id = ''

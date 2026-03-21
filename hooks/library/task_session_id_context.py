@@ -4,7 +4,7 @@ Claude Code Hook: Task/Agent Session ID Context Integration
 
 This hook ensures session ID context is included in task descriptions
 when spawning subagents using the Task/Agent tool. It reads the existing session ID
-from the .session_id file and provides guidance to the model to include it
+from the .context_server/.session_id file and provides guidance to the model to include it
 for better context continuity across agent hierarchy.
 
 Triggers on: PreToolUse (Task|Agent)
@@ -78,7 +78,7 @@ def check_session_id_in_tool_input(tool_input: dict[str, Any], session_id: str) 
 
 def read_session_id(claude_project_dir: str) -> str | None:
     """
-    Read the existing session ID from the .session_id file.
+    Read the existing session ID from the .context_server/.session_id file.
 
     Args:
         claude_project_dir: The Claude project directory path
@@ -88,7 +88,7 @@ def read_session_id(claude_project_dir: str) -> str | None:
     """
     try:
         # Construct the session ID file path
-        session_id_file = os.path.join(claude_project_dir, '.claude', '.session_id')
+        session_id_file = os.path.join(claude_project_dir, '.context_server', '.session_id')
         session_id_path = Path(session_id_file)
 
         if session_id_path.exists():

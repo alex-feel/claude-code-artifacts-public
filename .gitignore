@@ -1,6 +1,7 @@
 ### IDE
 .idea
 .claude
+.context_server
 .serena
 
 ### Python template

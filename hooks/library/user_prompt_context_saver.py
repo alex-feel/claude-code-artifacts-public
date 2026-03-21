@@ -1331,7 +1331,7 @@ def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
 
 def read_session_id(project_dir: str, config: dict[str, Any]) -> str:
     """
-    Read the current session ID from the .claude/.session_id file with retry logic.
+    Read the current session ID from the .context_server/.session_id file with retry logic.
 
     Implements exponential backoff retry to handle file locking and race conditions
     on Windows where Claude Code might still be writing the session ID file.
@@ -1350,7 +1350,7 @@ def read_session_id(project_dir: str, config: dict[str, Any]) -> str:
     max_retries: int = session_config.get('max_retries', 3)
     fallback_value: str = session_config.get('fallback_value', 'current-session')
 
-    session_id_file = Path(project_dir) / '.claude' / '.session_id'
+    session_id_file = Path(project_dir) / '.context_server' / '.session_id'
     log_always(f'Reading session ID from: {session_id_file}')
 
     if not session_id_file.exists():
