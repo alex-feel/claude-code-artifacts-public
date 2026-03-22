@@ -665,10 +665,11 @@ class EnvironmentConfig(BaseModel):
         alias='always-thinking-enabled',
         description='Whether to enable always-on thinking mode for extended reasoning (default: False)',
     )
-    effort_level: Literal['low', 'medium', 'high'] | None = Field(
+    effort_level: Literal['low', 'medium', 'high', 'max'] | None = Field(
         None,
         alias='effort-level',
-        description='Effort level for adaptive reasoning. Controls how much thinking is allocated based on task complexity.',
+        description='Effort level for adaptive reasoning. Controls how much thinking is allocated based on task complexity. '
+        'The "max" level is only available for Opus models.',
     )
     install_nodejs: bool | None = Field(
         None,
@@ -679,6 +680,12 @@ class EnvironmentConfig(BaseModel):
         None,
         alias='claude-code-version',
         description='Specific Claude Code version to install (e.g., "1.0.124"). If not specified, installs latest.',
+    )
+    version: str | None = Field(
+        None,
+        description='Configuration version for update checking. '
+        'Semantic versioning string (e.g., "1.0.0"). Optional; configs without '
+        'this field skip all version checking.',
     )
     inherit: str | None = Field(
         None,
@@ -828,6 +835,21 @@ class EnvironmentConfig(BaseModel):
             )
         return v
 
+    @field_validator('version')
+    @classmethod
+    def validate_version(cls, v: str | None) -> str | None:
+        """Validate configuration version format (semantic versioning)."""
+        if v is None:
+            return v
+
+        version_pattern = r'^(\d+)\.(\d+)\.(\d+)(?:-[\w\.\-]+)?(?:\+[\w\.\-]+)?$'
+        if not re.match(version_pattern, v):
+            raise ValueError(
+                f'version must be a valid semantic version '
+                f'(e.g., "1.0.0", "2.1.0-beta.1"). Got: {v}',
+            )
+        return v
+
     @field_validator('inherit')
     @classmethod
     def validate_inherit(cls, v: str | None) -> str | None:
@@ -899,6 +921,27 @@ class EnvironmentConfig(BaseModel):
             raise ValueError(
                 'command-defaults requires command-names to be specified. '
                 'Either provide both command-names and command-defaults, or omit both.',
+            )
+
+        return self
+
+    @model_validator(mode='after')
+    def validate_effort_level_max(self) -> 'EnvironmentConfig':
+        """Validate that effort_level 'max' is only used with Opus models."""
+        if self.effort_level != 'max':
+            return self
+
+        if self.model is None:
+            raise ValueError(
+                "effort-level 'max' requires model to be specified. "
+                "The 'max' effort level is only available for Opus models.",
+            )
+
+        if 'opus' not in self.model.lower():
+            raise ValueError(
+                f"effort-level 'max' is only available for Opus models, "
+                f"but model is set to '{self.model}'. "
+                "Use 'low', 'medium', or 'high' for non-Opus models.",
             )
 
         return self

@@ -95,9 +95,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'chunk_size': 30000,
         'json_overhead': 500,
     },
-    'session_id': {
+    'thread_id': {
         'max_retries': 3,
-        'fallback_value': 'current-session',
     },
     'mcp_client': {
         'max_retries': 3,
@@ -380,7 +379,7 @@ def report_error(error_type: str, error_msg: str) -> None:
     Logging is CONDITIONAL based on CLAUDE_HOOK_DEBUG_ENABLED environment variable.
 
     Args:
-        error_type: Category of error (e.g., 'UVX_FAILURE', 'SESSION_ID_READ')
+        error_type: Category of error (e.g., 'UVX_FAILURE', 'THREAD_ID_READ')
         error_msg: Detailed error message
     """
     full_msg = f'{error_type}: {error_msg}'
@@ -1329,56 +1328,56 @@ def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
     return False
 
 
-def read_session_id(project_dir: str, config: dict[str, Any]) -> str:
+def resolve_thread_id(project_dir: str, config: dict[str, Any], worktree_info: dict[str, Any]) -> str:
     """
-    Read the current session ID from the .context_server/.session_id file with retry logic.
+    Resolve the thread ID for context server storage.
 
-    Implements exponential backoff retry to handle file locking and race conditions
-    on Windows where Claude Code might still be writing the session ID file.
-
-    If the session ID file is unavailable, empty, or unreadable after all retry
-    attempts, returns fallback value from config to ensure context storage continues.
+    Discovery chain:
+    1. Read .context_server/.thread_id file (with retry for Windows file-locking)
+    2. Fall back to canonical project name from worktree_info
 
     Args:
         project_dir: The Claude project directory path
-        config: Configuration dictionary with session_id settings
+        config: Configuration dictionary with thread_id settings
+        worktree_info: Pre-computed worktree information from get_worktree_info()
 
     Returns:
-        The session ID string if found, or fallback value from config
+        The thread ID string (always non-empty)
     """
-    session_config = config.get('session_id', DEFAULT_CONFIG['session_id'])
-    max_retries: int = session_config.get('max_retries', 3)
-    fallback_value: str = session_config.get('fallback_value', 'current-session')
+    thread_id_config = config.get('thread_id', DEFAULT_CONFIG['thread_id'])
+    max_retries: int = thread_id_config.get('max_retries', 3)
 
-    session_id_file = Path(project_dir) / '.context_server' / '.session_id'
-    log_always(f'Reading session ID from: {session_id_file}')
+    thread_id_file = Path(project_dir) / '.context_server' / '.thread_id'
+    log_always(f'Reading thread ID from: {thread_id_file}')
 
-    if not session_id_file.exists():
-        log_always(f'Session ID file does not exist, using fallback: {fallback_value}')
-        return fallback_value
+    if not thread_id_file.exists():
+        project_name: str = str(worktree_info['project'])
+        log_always(f'Thread ID file does not exist, using project name: {project_name}')
+        return project_name
 
     for attempt in range(max_retries):
         try:
-            session_id = session_id_file.read_text(encoding='utf-8').strip()
-            if session_id:
+            thread_id = thread_id_file.read_text(encoding='utf-8').strip()
+            if thread_id:
                 if attempt > 0:
-                    log_always(f'Session ID read succeeded on attempt {attempt + 1}/{max_retries}')
-                log_always(f'Session ID: {session_id}')
-                return session_id
+                    log_always(f'Thread ID read succeeded on attempt {attempt + 1}/{max_retries}')
+                log_always(f'Thread ID: {thread_id}')
+                return thread_id
             report_error(
-                'SESSION_ID_READ',
-                f'Session ID file empty (attempt {attempt + 1}/{max_retries}), will use fallback if all attempts fail',
+                'THREAD_ID_READ',
+                f'Thread ID file empty (attempt {attempt + 1}/{max_retries})',
             )
         except OSError as e:
-            error_msg = f'Failed to read session ID (attempt {attempt + 1}/{max_retries}): {e}'
+            error_msg = f'Failed to read thread ID (attempt {attempt + 1}/{max_retries}): {e}'
             if attempt < max_retries - 1:
                 log_always(error_msg, level='ERROR')
                 time.sleep(0.1 * (2**attempt))  # Exponential backoff: 100ms, 200ms, 400ms
             else:
-                report_error('SESSION_ID_READ', error_msg)
+                report_error('THREAD_ID_READ', error_msg)
 
-    log_always(f'All session ID read attempts failed, using fallback: {fallback_value}')
-    return fallback_value
+    fallback_name: str = str(worktree_info['project'])
+    log_always(f'All thread ID read attempts failed, using project name: {fallback_name}')
+    return fallback_name
 
 
 def create_mcp_client_with_retry(config: dict[str, Any]) -> SyncMCPClient:
@@ -1643,14 +1642,17 @@ def main() -> None:
             log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
             sys.exit(0)
 
-        # Read session ID (always returns a valid string, using fallback from config)
-        session_id = read_session_id(claude_project_dir, config)
+        # Get worktree information for context metadata and thread ID resolution
+        # Provides canonical project name from git remote URL for cross-worktree consistency
+        worktree_info = get_worktree_info(claude_project_dir)
+        log_always(f'Worktree info: project={worktree_info["project"]}')
+
+        # Resolve thread ID (reads .thread_id file, falls back to project name)
+        thread_id = resolve_thread_id(claude_project_dir, config, worktree_info)
 
         # Create MCP client and store context
         try:
             # Any failure in MCP communication should be silent
-            # Pass command as a list for FastMCP to properly parse
-            # Use PyPI package (simpler and faster than GitHub URL)
             #
             # CRITICAL UTF-8 REQUIREMENT:
             # The setup_windows_utf8() function MUST be called before this point
@@ -1665,11 +1667,6 @@ def main() -> None:
             # Create client based on transport configuration (stdio or http)
             client = create_mcp_client(config)
 
-            # Get worktree information for context metadata
-            # Provides canonical project name from git remote URL for cross-worktree consistency
-            worktree_info = get_worktree_info(claude_project_dir)
-            log_always(f'Worktree info: project={worktree_info["project"]}, worktree_id={worktree_info.get("worktree_id")}')
-
             # Build metadata with worktree fields for context isolation
             metadata: dict[str, Any] = {
                 'project': worktree_info['project'],
@@ -1682,11 +1679,9 @@ def main() -> None:
             if worktree_info.get('is_linked_worktree') is not None:
                 metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
 
-            # Store the user prompt in the context server
-            # Using session_id as thread_id to group prompts by session
             log_always('Storing context in MCP server')
             result = client.store_context(
-                thread_id=session_id,
+                thread_id=thread_id,
                 source='user',
                 text=prompt,
                 metadata=metadata,
