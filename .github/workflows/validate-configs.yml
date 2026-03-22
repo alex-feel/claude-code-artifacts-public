@@ -67,7 +67,7 @@ jobs:
               echo "Validating: $config_file"
 
               # All configs reaching here are library configs (templates already excluded)
-              if ! uv run python scripts/validate_environment_config.py "$config_file" --strict; then
+              if ! uv run python .github/validate_configs.py "$config_file" --strict; then
                 exit_code=1
               fi
             fi
@@ -118,7 +118,7 @@ jobs:
 
             To validate locally, run:
             \`\`\`bash
-            python scripts/validate_environment_config.py <config-file> --strict
+            python .github/validate_configs.py <config-file> --strict
             \`\`\``;
 
             github.rest.issues.createComment({
