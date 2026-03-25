@@ -66,6 +66,7 @@ _JSON_OVERHEAD = 500  # Estimated bytes for JSON structure (thread_id, source, e
 # Maintains backward compatibility with original behavior
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
+    'output_context_id': True,  # Output stored context_id via hookSpecificOutput.additionalContext
     'skip_patterns': [],  # Regex patterns to skip (for internal hook prompts)
     'prebuilt_commands': [
         'add-dir',
@@ -1718,8 +1719,39 @@ def main() -> None:
                     log_always(f'User feedback mode: {fail_mode}')
                 else:
                     log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
+
+                # Output chunk IDs via additionalContext for orchestrator reference
+                if config.get('output_context_id', True):
+                    chunk_ids = result.get('chunk_ids', [])
+                    if chunk_ids:
+                        hook_output: dict[str, Any] = {
+                            'hookSpecificOutput': {
+                                'hookEventName': 'UserPromptSubmit',
+                                'additionalContext': (
+                                    f'[Hook: user message stored to context-server (chunked).'
+                                    f' context_ids={chunk_ids}]'
+                                ),
+                            },
+                        }
+                        sys.stdout.write(json.dumps(hook_output))
+                        sys.stdout.flush()
+                        log_always(f'Output chunk context_ids={chunk_ids} via additionalContext')
             else:
                 log_always('SUCCESS: Context stored successfully')
+
+                # Output context_id via additionalContext for orchestrator reference
+                if config.get('output_context_id', True):
+                    context_id = result.get('context_id')
+                    if context_id is not None:
+                        hook_output = {
+                            'hookSpecificOutput': {
+                                'hookEventName': 'UserPromptSubmit',
+                                'additionalContext': f'[Hook: user message stored to context-server. context_id={context_id}]',
+                            },
+                        }
+                        sys.stdout.write(json.dumps(hook_output))
+                        sys.stdout.flush()
+                        log_always(f'Output context_id={context_id} via additionalContext')
 
         except Exception as e:
             # Log the error for debugging with full traceback, then suppress as designed

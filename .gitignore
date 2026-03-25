@@ -3,6 +3,7 @@
 .claude
 .context_server
 .serena
+.code-review-graph
 
 ### Python template
 # Byte-compiled / optimized / DLL files

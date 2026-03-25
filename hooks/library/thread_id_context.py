@@ -14,11 +14,24 @@ thread_id for the context server, bridging the two naming conventions.
 Trigger: SessionStart with any source
 """
 
+import importlib.util
 import json
 import os
 import sys
 from contextlib import suppress
 from pathlib import Path
+from types import ModuleType
+
+
+def _load_json_output() -> ModuleType:
+    """Dynamically load hook_json_output from the same directory."""
+    loader_path = Path(__file__).parent / 'hook_json_output.py'
+    spec = importlib.util.spec_from_file_location('hook_json_output', loader_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Cannot load hook_json_output from {loader_path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main() -> None:
@@ -69,7 +82,11 @@ def main() -> None:
             f'CRITICAL: When spawning or resuming subagents via the Task/Agent tool, include this thread ID ({session_id}) '
             'in the task prompt to maintain context continuity across the agent hierarchy.'
         )
-        print(context_message)
+        try:
+            json_output = _load_json_output()
+            json_output.emit_additional_context('SessionStart', context_message)
+        except ImportError:
+            print(context_message)
 
         sys.exit(0)
 

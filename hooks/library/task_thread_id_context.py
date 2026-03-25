@@ -16,15 +16,28 @@ Exit Codes:
 - 2: Guidance provided to include thread ID context (blocking)
 """
 
+import importlib.util
 import json
 import os
 import sys
 from contextlib import suppress
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 # Type alias for JSON-like values that can be recursively processed
 JSONValue = str | int | float | bool | None | dict[str, Any] | list[Any]
+
+
+def _load_json_output() -> ModuleType:
+    """Dynamically load hook_json_output from the same directory."""
+    loader_path = Path(__file__).parent / 'hook_json_output.py'
+    spec = importlib.util.spec_from_file_location('hook_json_output', loader_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Cannot load hook_json_output from {loader_path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def contains_thread_id(text: str | None, thread_id: str) -> bool:
@@ -151,7 +164,12 @@ def main() -> None:
 
         # Check if thread ID is already present anywhere in the tool input
         if check_thread_id_in_tool_input(tool_input, thread_id):
-            # Thread ID context is already present, allow the operation
+            # Thread ID context is already present, inject reinforcement context
+            try:
+                json_output = _load_json_output()
+                json_output.emit_additional_context('PreToolUse', generate_thread_context(thread_id))
+            except ImportError:
+                pass
             sys.exit(0)
 
         # Generate the thread context

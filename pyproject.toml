@@ -178,5 +178,5 @@ reportUnnecessaryTypeIgnoreComment = "none"
 strict = ["scripts", "hooks"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "hooks/library"]
 asyncio_default_fixture_loop_scope = "function"
