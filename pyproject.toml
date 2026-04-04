@@ -177,6 +177,18 @@ reportUnnecessaryTypeIgnoreComment = "none"
 # Make dirs strict
 strict = ["scripts", "hooks"]
 
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["scripts", "hooks"]
+
+[tool.ty.rules]
+unused-ignore-comment = "warn"
+
+[tool.ty.terminal]
+output-format = "full"
+
 [tool.pytest.ini_options]
 pythonpath = [".", "hooks/library", ".github"]
 asyncio_default_fixture_loop_scope = "function"
