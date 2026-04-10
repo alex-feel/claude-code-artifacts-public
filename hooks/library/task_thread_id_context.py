@@ -126,7 +126,7 @@ def generate_thread_context(thread_id: str) -> str:
         str: Formatted thread ID context
     """
     return (
-        f'THREAD CONTEXT: Use thread ID {thread_id} for this task. '
+        f'THREAD CONTEXT: Use current thread ID {thread_id} for this task. '
         'This maintains context and continuity across the agent hierarchy.\n'
     )
 
@@ -177,8 +177,8 @@ def main() -> None:
 
         # Generate guidance for including thread ID context
         guidance_message = (
-            'GUIDANCE: Please include thread ID context in your task description.\n\n'
-            'For better context continuity across the agent hierarchy, the task description should include:\n\n'
+            'GUIDANCE: Please include current thread ID context in your task description.\n\n'
+            'For better context continuity across the agent hierarchy, the task description must include:\n\n'
             f'{thread_context}\n'
             'This helps subagents maintain context awareness and enables proper context retrieval '
             'and storage operations. The thread ID ensures all agents in the hierarchy share '

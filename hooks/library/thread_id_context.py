@@ -76,11 +76,11 @@ def main() -> None:
 
         # Output unified thread context message to the model
         context_message = (
-            f'THREAD CONTEXT: Thread ID is {session_id}.\n'
+            f'THREAD CONTEXT: Current thread ID is {session_id}.\n'
             'This thread ID identifies the current context-server thread for context storage and retrieval. '
             'Use this value as thread_id when working with the context-server.\n\n'
-            f'CRITICAL: When spawning or resuming subagents via the Task/Agent tool, include this thread ID ({session_id}) '
-            'in the task prompt to maintain context continuity across the agent hierarchy.'
+            'CRITICAL: When spawning or resuming subagents via the Task/Agent tool, ALWAYS include the current '
+            'thread ID in the task prompt to maintain context continuity across the agent hierarchy.'
         )
         try:
             json_output = _load_json_output()
