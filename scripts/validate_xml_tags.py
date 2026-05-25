@@ -30,7 +30,11 @@ class TagInfo:
 
 def remove_fenced_code_blocks(content: str) -> tuple[str, dict[int, int]]:
     """
-    Remove fenced code blocks from content and build line number mapping.
+    Remove fenced code blocks and inline code spans from content and build line number mapping.
+
+    Fenced code blocks (triple-backtick) and inline code spans (single-backtick) are stripped
+    so XML-like tokens inside them are not parsed as XML tags. For example, the literal text
+    ``See `<my_tag>` block.`` would otherwise register `<my_tag>` as a real opening tag.
 
     Args:
         content: The original file content
@@ -44,6 +48,8 @@ def remove_fenced_code_blocks(content: str) -> tuple[str, dict[int, int]]:
     line_mapping: dict[int, int] = {}
     in_code_block = False
     result_line_num = 0
+
+    inline_code_pattern = re.compile(r'`[^`\n]*`')
 
     for original_line_num, line in enumerate(lines, 1):
         # Check for code block delimiter (``` with optional language specifier)
@@ -61,7 +67,9 @@ def remove_fenced_code_blocks(content: str) -> tuple[str, dict[int, int]]:
             result_line_num += 1
             line_mapping[result_line_num] = original_line_num
         else:
-            result_lines.append(line)
+            # Strip inline code spans so tag-like tokens inside backticks are not parsed
+            cleaned_line = inline_code_pattern.sub('', line)
+            result_lines.append(cleaned_line)
             result_line_num += 1
             line_mapping[result_line_num] = original_line_num
 
