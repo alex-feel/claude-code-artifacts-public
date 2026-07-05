@@ -8,8 +8,6 @@ A public library of reusable Claude Code artifacts — skills, hooks, rules, env
 
 Each artifact here is a self-contained building block for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview). Artifacts are consumed declaratively by the [Claude Code Toolbox](https://github.com/alex-feel/claude-code-toolbox) environment configuration system: you reference an artifact from a single environment YAML file (by raw URL or a shared `base-url`) and the toolbox installs it for you. Artifacts are also usable on their own — copy a rule, a hook, or a skill straight into your `~/.claude/` directory.
 
-Some artifacts are authored directly in this repository; others are mirrored in from the private source repositories (see [Provenance and sync](#provenance-and-sync)).
-
 ## Repository structure
 
 ```text
@@ -24,7 +22,7 @@ Some artifacts are authored directly in this repository; others are mirrored in 
 ├── environments/
 │   ├── library/               # ready-to-use environment configs (*.yaml)
 │   └── templates/             # environment templates with placeholders (*.yaml)
-└── .github/                   # CI, issue forms, and the synced validation model
+└── .github/                   # CI, issue forms, and the config validation model
 ```
 
 Every artifact type carries its own short README describing the layout and conventions: [skills](skills/README.md), [hooks](hooks/README.md), [rules](rules/README.md), [environments](environments/README.md), [agents](agents/README.md), [slash commands](slash-commands/README.md).
@@ -56,15 +54,6 @@ See the toolbox [Environment Configuration Guide](https://github.com/alex-feel/c
 ## Adding a new artifact
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow. In short: place the artifact under the matching `<type>/library/` directory following that type's README, run the quality gate locally (`uv run pre-commit run --all-files`), and open a pull request. Environment configurations are additionally schema-validated in CI.
-
-## Provenance and sync
-
-This repository has two kinds of content:
-
-- Artifacts authored here directly, maintained through pull requests.
-- Artifacts mirrored from the private [`claude-code-artifacts`](https://github.com/alex-feel/claude-code-artifacts) and [`claude-code-toolbox`](https://github.com/alex-feel/claude-code-toolbox) repositories. Mirroring is driven by each source repository's `.github/sync-config.yaml`; to publish an artifact from a source repo, add a target entry pointing at `alex-feel/claude-code-artifacts-public`.
-
-The environment-configuration schema at `.github/environment_config.py` is synced from `claude-code-toolbox` and is machine-managed — do not edit it by hand.
 
 ## Security
 

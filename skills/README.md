@@ -50,4 +50,4 @@ dependencies:
     - npx --y skills@latest add alex-feel/claude-code-artifacts-public --skill my-skill -g -a --copy claude-code -y
 ```
 
-Pin a specific CLI version for reproducibility. For a real-world example that installs many skills this way, see the `dependencies` block of [`aegis.yaml`](https://github.com/alex-feel/claude-code-artifacts/blob/main/environments/library/aegis.yaml) in the source repository.
+Pin a specific CLI version for reproducibility. Pass multiple `--skill` flags to install several skills in one command. See the toolbox [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) for how `dependencies` commands run during setup.

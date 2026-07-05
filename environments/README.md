@@ -14,7 +14,7 @@ environments/
 
 - `library/` holds configurations that must be fully valid — they are schema-validated in CI on every pull request.
 - `templates/` holds scaffolds with placeholders (for example `<your-base-url>`); these are intentionally excluded from strict validation.
-- The schema is defined by `.github/environment_config.py`, which is synced from `claude-code-toolbox`. Do not edit that file here.
+- The validation schema lives in `.github/environment_config.py` and is maintained as CI tooling — do not edit it by hand.
 
 ## Validating locally
 

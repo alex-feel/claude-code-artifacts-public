@@ -31,7 +31,6 @@ body:
         - Authoring a rule
         - Environment configuration
         - Agents & slash commands
-        - Sync & provenance
         - Other
     validations:
       required: true

@@ -4,8 +4,7 @@ Thanks for helping grow the Claude Code Artifacts library. This guide covers how
 
 ## Ways to contribute
 
-- **Author directly** — add a new artifact under the matching `<type>/library/` directory and open a pull request.
-- **Mirror from a source repo** — some artifacts are synced in from the private [`claude-code-artifacts`](https://github.com/alex-feel/claude-code-artifacts) and [`claude-code-toolbox`](https://github.com/alex-feel/claude-code-toolbox) repositories. To publish one, add a target entry pointing at `alex-feel/claude-code-artifacts-public` in that source repo's `.github/sync-config.yaml`. Do not hand-edit synced files here (notably `.github/environment_config.py`); edit them at the source.
+Add a new artifact under the matching `<type>/library/` directory following that type's README, run the quality gate, and open a pull request. Every artifact here is maintained through pull requests.
 
 ## Where each artifact goes
 
