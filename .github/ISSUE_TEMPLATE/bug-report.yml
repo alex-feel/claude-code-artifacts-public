@@ -1,0 +1,114 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in an artifact or in the repository tooling
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the form below to help us investigate.
+
+        **Before submitting, please note:** A clear description and reproduction steps are the most helpful things you can provide. If you have done genuine investigation and have a non-obvious insight into the root cause, include it. But please do not speculate or include LLM-generated diagnoses -- an incorrect analysis is harder to work with than none at all.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Pre-submission Checks
+      options:
+        - label: I am using the current version of the artifact from the main branch
+          required: true
+        - label: I searched existing issues and found no duplicates
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: >-
+        Describe the bug clearly. Include what happened and what you expected to happen instead.
+      placeholder: |
+        What happened:
+        ...
+
+        What I expected:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: >-
+        Provide the minimal steps needed to reproduce this bug. Include how you installed or
+        referenced the artifact and any relevant configuration.
+      placeholder: |
+        1. Reference artifact...
+        2. Run command...
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: artifact-type
+    attributes:
+      label: Artifact Type
+      description: Which type of artifact is affected?
+      options:
+        - Skill
+        - Hook
+        - Rule
+        - Environment Configuration
+        - Agent
+        - Slash Command
+        - Repository tooling (CI / validation / pre-commit)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: artifact-name
+    attributes:
+      label: Artifact Name or Path
+      description: The name or repository path of the affected artifact.
+      placeholder: "e.g., skills/library/code-review or hooks/library/my_hook.py"
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error Output
+      description: >-
+        Paste any error messages, tracebacks, or relevant log output. This will be automatically
+        formatted as a code block.
+      render: text
+
+  - type: textarea
+    id: yaml-config
+    attributes:
+      label: YAML Configuration
+      description: >-
+        If the issue involves an environment configuration, paste the relevant parts of your YAML
+        (redact any sensitive values like tokens or API keys). This will be automatically formatted
+        as a code block.
+      render: yaml
+
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code Version
+      description: "Run `claude --version` and paste the output, if applicable."
+      placeholder: "e.g., 2.1.0"
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: "For hook issues, run `python --version` and paste the output."
+      placeholder: "e.g., 3.12.4"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: >-
+        Add any other context about the problem here. Screenshots, environment details, or the
+        configuration you used may be helpful.

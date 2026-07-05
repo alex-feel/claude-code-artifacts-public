@@ -1,7 +1,7 @@
 [project]
-name = "claude-code-artifacts"
+name = "claude-code-artifacts-public"
 version = "1.0.0"
-description = "Claude Code Artifacts — pre-built library with Claude Code enhancements: subagents, hooks, output styles, custom slash commands, system prompts, and environments."
+description = "Claude Code Artifacts — a public library of reusable Claude Code artifacts: skills, hooks, rules, environment configurations, agents, and slash commands."
 readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
@@ -15,6 +15,8 @@ dependencies = [
 dev = [
     "pre-commit>=4.0.1",
     "mypy>=1.13.0",
+    "pyright>=1.1.390",
+    "ty>=0.0.28",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
@@ -104,7 +106,11 @@ ignore-one-line-docstrings = true
 [tool.mypy]
 # Core safety, balanced for production
 python_version = '3.12'
-files = ['scripts', 'hooks']
+# Check every tracked Python location. '.' tolerates an empty hooks/ directory
+# (no hook artifacts yet), unlike naming 'hooks' explicitly, which mypy rejects
+# when the directory contains no .py files. Gitignored paths and .github/ (the
+# synced, machine-managed model) are excluded below.
+files = ['.']
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_calls = true
@@ -149,6 +155,8 @@ plugins = ['pydantic.mypy']
 exclude_gitignore = true
 exclude = '''(?x)(
   ^\.venv/
+| ^\.git/
+| ^\.github/
 | ^\.tox/
 | ^\.mypy_cache/
 | ^\.pytest_cache/

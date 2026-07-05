@@ -1,0 +1,48 @@
+name: Question
+description: Ask a question about the artifacts or how to use them
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, you may find your answer in the existing documentation:
+
+        - [README](https://github.com/alex-feel/claude-code-artifacts-public#readme) -- Overview and usage
+        - [CONTRIBUTING](https://github.com/alex-feel/claude-code-artifacts-public/blob/main/CONTRIBUTING.md) -- How to add and validate artifacts
+        - [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) -- Full YAML reference for consuming artifacts
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Describe your question in detail. Include what you are trying to achieve and any relevant context.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic Area
+      description: What area does your question relate to?
+      options:
+        - Using an artifact
+        - Authoring a skill
+        - Authoring a hook
+        - Authoring a rule
+        - Environment configuration
+        - Agents & slash commands
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I've Tried
+      description: Describe what you have already tried or investigated. This helps avoid suggesting things you already know.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, code snippets, or configuration details that may help answer your question.
