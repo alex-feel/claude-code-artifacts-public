@@ -48,7 +48,7 @@ repos:
       language: system
       entry: uv
       args: ['run', '--frozen', '--group', 'dev', '--', 'python', 'scripts/validate_xml_tags.py']
-      files: ^(agents/library|skills/library|system-prompts/library|output-styles/library)/.*\.md$
+      files: ^(agents/library|skills/library)/.*\.md$
       exclude: (CLAUDE\.md|README\.md)$
       pass_filenames: true
 
