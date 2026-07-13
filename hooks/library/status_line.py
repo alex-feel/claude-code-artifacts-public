@@ -6,20 +6,37 @@
 """
 Status line hook for Claude Code.
 
-Displays: [model] | project_dir | git_branch | session_id | +N/-M | [rate_limits] | [update] | [suffix]
+Displays: [model] | project | branch | session | [+N/-M] | [ctx:N%] | [eff:level] | [rate_limits] | [update] | [suffix]
 
 This script receives JSON via stdin and outputs a colored status line.
 The first line of stdout becomes the status line text.
 
+The line is composed of named blocks: model, project, branch, session, lines,
+context, effort, rate_limits, update, and suffix.
+
 Features:
-- Optional model display: shows the current model name at the start of the line
-- Protected branch warning: main/master displayed in RED + BOLD
-- Claude session line stats: shows lines added (GREEN) and removed (RED)
+- Configurable block order: the 'order' config list controls the segment
+  sequence; blocks missing from the list are appended in the default order
+- Per-block customization: every block has an 'enabled' flag, color settings
+  (including 'none' for uncolored output and bright_ color variants), and a
+  'bold' flag; the separator between blocks is configurable as well
+- Optional model display: shows the current model name (disabled by default)
+- Protected branch warning: protected branches (default main/master) render
+  in a warning color and bold
+- Claude session line stats: lines added and removed, individually colored
+- Context usage display: percent of the model context window used,
+  threshold-colored (ok/warn/crit) as the auto-compaction point approaches,
+  with optional token counts
+- Reasoning effort display: the current effort level (low/medium/high/xhigh/max)
+  with per-level colors; hidden for models without effort support
 - Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
 - Update availability indicator: shows "UPD v{version}" when a marker file is present
 - Configurable suffix: optional custom text at end of status line
 
-Segments in brackets are optional and appear only when enabled and present.
+The 'order' list controls sequence only. Visibility is controlled exclusively
+by each block's 'enabled' flag and by payload presence (the suffix block shows
+only when its text is non-empty; the update block shows only when a command
+name is configured, the marker file exists, and the block is enabled).
 
 Configuration is loaded from external YAML file when provided.
 """
@@ -28,6 +45,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -50,19 +68,53 @@ class Colors:
     """ANSI escape codes for terminal colors."""
 
     RESET = '\033[0m'
-    CYAN = '\033[36m'
-    BLUE = '\033[34m'
+    BOLD = '\033[1m'
+    BLACK = '\033[30m'
+    RED = '\033[31m'
     GREEN = '\033[32m'
     YELLOW = '\033[33m'
-    RED = '\033[31m'
+    BLUE = '\033[34m'
     MAGENTA = '\033[35m'
-    BOLD = '\033[1m'
+    CYAN = '\033[36m'
+    WHITE = '\033[37m'
+    BRIGHT_BLACK = '\033[90m'
+    BRIGHT_RED = '\033[91m'
+    BRIGHT_GREEN = '\033[92m'
+    BRIGHT_YELLOW = '\033[93m'
+    BRIGHT_BLUE = '\033[94m'
+    BRIGHT_MAGENTA = '\033[95m'
+    BRIGHT_CYAN = '\033[96m'
+    BRIGHT_WHITE = '\033[97m'
+
+
+# Canonical block names in their default display sequence. The 'order' config
+# list controls sequence only; visibility is governed per block (see the
+# module docstring).
+_DEFAULT_BLOCK_ORDER: tuple[str, ...] = (
+    'model',
+    'project',
+    'branch',
+    'session',
+    'lines',
+    'context',
+    'effort',
+    'rate_limits',
+    'update',
+    'suffix',
+)
 
 
 # Default configuration - used when no config file provided
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
     'command_name': '',
+    'protected_branches': ['main', 'master'],
+    # Separator string printed between rendered blocks. An empty string is
+    # allowed and joins the blocks without any spacing.
+    'separator': ' | ',
+    # Block display sequence. Unknown names are ignored; recognized blocks
+    # missing from the list are appended in the default sequence.
+    'order': list(_DEFAULT_BLOCK_ORDER),
     'model': {
         # Off by default: the shipped hook does not show the model segment.
         'enabled': False,
@@ -71,16 +123,73 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # "claude-opus-4-8"). Falls back to the other field when absent.
         'source': 'display_name',
         'color': 'magenta',
+        'bold': False,
     },
-    'protected_branches': ['main', 'master'],
-    'suffix': {
-        'text': '',
+    'project': {
+        'enabled': True,
+        'color': 'yellow',
+        'bold': False,
+    },
+    'branch': {
+        'enabled': True,
+        'color': 'green',
+        'bold': False,
+        # Branches listed in the top-level 'protected_branches' list render
+        # with the warning styling below instead of the normal color.
+        'protected_color': 'red',
+        'protected_bold': True,
+    },
+    'session': {
+        'enabled': True,
         'color': 'cyan',
+        'bold': False,
+    },
+    'lines': {
+        'enabled': True,
+        'added_color': 'green',
+        'removed_color': 'red',
+        'bold': False,
+    },
+    'context': {
+        'enabled': True,
+        'label': 'ctx:',
+        # Percent-used thresholds. The percentage is measured against the
+        # full model context window; auto-compaction triggers before the
+        # window is exhausted, so crit_threshold approximates "compaction
+        # imminent" rather than "window full".
+        'warn_threshold': 70,
+        'crit_threshold': 90,
+        'ok_color': 'green',
+        'warn_color': 'yellow',
+        'crit_color': 'red',
+        # When true, appends " (Nk/Mk)" with used and total tokens rounded
+        # to thousands (a 1M-token window renders as 1000k).
+        'show_tokens': False,
+        'bold': False,
+    },
+    'effort': {
+        'enabled': True,
+        'label': 'eff:',
+        # Fallback color for levels missing from level_colors (including
+        # unknown future level names, which still render).
+        'color': 'cyan',
+        'level_colors': {
+            'low': 'green',
+            'medium': 'cyan',
+            'high': 'blue',
+            'xhigh': 'magenta',
+            'max': 'red',
+        },
+        'bold': False,
     },
     'rate_limits': {
         'enabled': True,
         'warn_threshold': 70,
         'crit_threshold': 90,
+        'ok_color': 'green',
+        'warn_color': 'yellow',
+        'crit_color': 'red',
+        'bold': False,
         'window_keys': {
             # Verified key names from Claude Code's documented statusline JSON
             # schema (https://code.claude.com/docs/en/statusline). The top-level
@@ -91,17 +200,39 @@ DEFAULT_CONFIG: dict[str, Any] = {
             'seven_day': 'seven_day',
         },
     },
+    'update': {
+        'enabled': True,
+        'color': 'yellow',
+        'bold': False,
+    },
+    'suffix': {
+        'text': '',
+        'color': 'cyan',
+        'bold': False,
+    },
 }
 
 
-# Mapping of color names to ANSI codes
+# Mapping of color names to ANSI codes. The 'none' entry maps to an empty
+# code, which disables coloring for that block entirely.
 COLOR_MAP: dict[str, str] = {
-    'cyan': Colors.CYAN,
-    'blue': Colors.BLUE,
+    'none': '',
+    'black': Colors.BLACK,
+    'red': Colors.RED,
     'green': Colors.GREEN,
     'yellow': Colors.YELLOW,
-    'red': Colors.RED,
+    'blue': Colors.BLUE,
     'magenta': Colors.MAGENTA,
+    'cyan': Colors.CYAN,
+    'white': Colors.WHITE,
+    'bright_black': Colors.BRIGHT_BLACK,
+    'bright_red': Colors.BRIGHT_RED,
+    'bright_green': Colors.BRIGHT_GREEN,
+    'bright_yellow': Colors.BRIGHT_YELLOW,
+    'bright_blue': Colors.BRIGHT_BLUE,
+    'bright_magenta': Colors.BRIGHT_MAGENTA,
+    'bright_cyan': Colors.BRIGHT_CYAN,
+    'bright_white': Colors.BRIGHT_WHITE,
 }
 
 
@@ -135,57 +266,191 @@ def _resolve_color(value: object, default_name: str) -> str:
             of COLOR_MAP.
 
     Returns:
-        The ANSI escape code for the resolved color.
+        The ANSI escape code for the resolved color ('' for 'none').
     """
     name = value.lower() if isinstance(value, str) else default_name
     return COLOR_MAP.get(name, COLOR_MAP[default_name])
+
+
+def _paint(text: str, color_value: object, default_name: str, bold: bool = False) -> str:
+    """Wrap text in ANSI styling resolved from a configured color value.
+
+    Resolves color_value via _resolve_color. When the resolved code is empty
+    (color 'none') and bold is off, the text is returned unchanged so that
+    uncolored blocks carry no escape codes at all.
+
+    Args:
+        text: The text to style.
+        color_value: The configured color, expected to be a color-name string.
+        default_name: Color name used when color_value is unusable; must be a
+            key of COLOR_MAP.
+        bold: Whether to prefix the segment with the ANSI bold code.
+
+    Returns:
+        The styled text, or the unmodified text when no styling applies.
+    """
+    code = _resolve_color(color_value, default_name)
+    if not code and not bold:
+        return text
+    prefix = Colors.BOLD if bold else ''
+    return f'{prefix}{code}{text}{Colors.RESET}'
+
+
+def _resolve_block_order(config: dict[str, Any]) -> list[str]:
+    """Resolve the block display sequence from the 'order' config list.
+
+    Starts from ``config['order']`` when it is a list, keeps only recognized
+    block names, and dedupes them preserving the first occurrence. Every
+    recognized block missing from the configured list is then appended in
+    default order, so the 'order' list controls sequence only and can never
+    hide a block (visibility is governed by each block's 'enabled' flag).
+
+    Args:
+        config: Configuration dictionary with an optional 'order' list.
+
+    Returns:
+        The full list of recognized block names in display sequence.
+    """
+    configured = config.get('order')
+    if not isinstance(configured, list):
+        return list(_DEFAULT_BLOCK_ORDER)
+
+    configured_names = cast('list[object]', configured)
+    seen = dict.fromkeys(
+        name
+        for name in configured_names
+        if isinstance(name, str) and name in _DEFAULT_BLOCK_ORDER
+    )
+    resolved = list(seen)
+    resolved.extend(name for name in _DEFAULT_BLOCK_ORDER if name not in seen)
+    return resolved
 
 
 def get_branch_display(branch: str, config: dict[str, Any]) -> str:
     """
     Get the formatted branch display with appropriate color.
 
-    Protected branches (main/master) are displayed in RED + BOLD as a warning.
-    Other branches use the default GREEN color.
+    Branches listed in the top-level 'protected_branches' config list render
+    with the branch block's protected styling (RED + BOLD by default) as a
+    warning. Other branches use the block's normal styling (GREEN by default).
 
     Args:
         branch: Git branch name
-        config: Configuration dictionary with protected_branches list
+        config: Configuration dictionary with a protected_branches list and a
+            'branch' sub-dict carrying color/bold and protected_color/
+            protected_bold settings.
 
     Returns:
         ANSI-colored branch string
     """
+    branch_config = _as_dict(config.get('branch'), DEFAULT_CONFIG['branch'])
     protected = config.get('protected_branches', DEFAULT_CONFIG['protected_branches'])
     if not isinstance(protected, (list, tuple, set)):
         protected = DEFAULT_CONFIG['protected_branches']
     if branch in protected:
-        # Warning: RED + BOLD for protected branches
-        return f'{Colors.BOLD}{Colors.RED}{branch}{Colors.RESET}'
-    # Normal: GREEN for other branches
-    return f'{Colors.GREEN}{branch}{Colors.RESET}'
+        # Warning styling for protected branches
+        return _paint(
+            branch,
+            branch_config.get('protected_color'),
+            'red',
+            branch_config.get('protected_bold', True) is True,
+        )
+    # Normal styling for other branches
+    return _paint(branch, branch_config.get('color'), 'green', branch_config.get('bold') is True)
 
 
-def get_claude_lines_display(data: dict[str, Any]) -> str:
+def get_project_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Get the formatted project-name segment if enabled.
+
+    Shows the basename of `workspace.project_dir`, falling back to
+    `workspace.current_dir`, and 'unknown' when neither is present.
+
+    Args:
+        data: Statusline input JSON (as a dict), expected to carry a
+            `workspace` object with `project_dir` and/or `current_dir`.
+        config: Configuration dictionary; expects a `project` sub-dict with
+            `enabled` (bool), `color`, and `bold`.
+
+    Returns:
+        ANSI-colored project string, or None when the block is disabled.
+    """
+    project_config = _as_dict(config.get('project'), DEFAULT_CONFIG['project'])
+    if not project_config.get('enabled', True):
+        return None
+
+    workspace = _as_dict(data.get('workspace'), {})
+    project_dir = workspace.get('project_dir', workspace.get('current_dir', ''))
+    if not isinstance(project_dir, str):
+        project_dir = ''
+    project_name = Path(project_dir).name if project_dir else 'unknown'
+
+    return _paint(project_name, project_config.get('color'), 'yellow', project_config.get('bold') is True)
+
+
+def get_session_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Get the formatted session-id segment if enabled.
+
+    Shows the full session id for traceability, or 'unknown' when the payload
+    carries no usable `session_id` string.
+
+    Args:
+        data: Statusline input JSON (as a dict), expected to carry a
+            `session_id` string.
+        config: Configuration dictionary; expects a `session` sub-dict with
+            `enabled` (bool), `color`, and `bold`.
+
+    Returns:
+        ANSI-colored session-id string, or None when the block is disabled.
+    """
+    session_config = _as_dict(config.get('session'), DEFAULT_CONFIG['session'])
+    if not session_config.get('enabled', True):
+        return None
+
+    session_id = data.get('session_id')
+    if not isinstance(session_id, str) or not session_id:
+        session_id = 'unknown'
+
+    return _paint(session_id, session_config.get('color'), 'cyan', session_config.get('bold') is True)
+
+
+def get_claude_lines_display(data: dict[str, Any], config: dict[str, Any]) -> str:
     """
     Get Claude's session line change statistics.
 
-    Extracts total_lines_added and total_lines_removed from the cost data
-    and formats them as colored statistics (GREEN for additions, RED for deletions).
+    Extracts total_lines_added and total_lines_removed from the cost data and
+    formats them as colored statistics (GREEN additions and RED deletions by
+    default; both colors are configurable via the `lines` config block).
 
     Args:
         data: Input JSON data containing cost statistics.
+        config: Configuration dictionary; expects a `lines` sub-dict with
+            `enabled` (bool), `added_color`, `removed_color`, and `bold`.
 
     Returns:
-        Formatted string like "+N/-M" with ANSI colors, or empty string if both are 0.
+        Formatted string like "+N/-M" with ANSI colors, or empty string when
+        both counters are 0 or the block is disabled.
     """
-    cost = data.get('cost', {})
+    lines_config = _as_dict(config.get('lines'), DEFAULT_CONFIG['lines'])
+    if not lines_config.get('enabled', True):
+        return ''
+
+    cost = _as_dict(data.get('cost'), {})
     added = cost.get('total_lines_added', 0)
     removed = cost.get('total_lines_removed', 0)
+    if not isinstance(added, (int, float)):
+        added = 0
+    if not isinstance(removed, (int, float)):
+        removed = 0
 
     if added == 0 and removed == 0:
         return ''
 
-    return f'{Colors.GREEN}+{added}{Colors.RESET}/{Colors.RED}-{removed}{Colors.RESET}'
+    bold = lines_config.get('bold') is True
+    added_part = _paint(f'+{added}', lines_config.get('added_color'), 'green', bold)
+    removed_part = _paint(f'-{removed}', lines_config.get('removed_color'), 'red', bold)
+    return f'{added_part}/{removed_part}'
 
 
 def get_model_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
@@ -203,7 +468,8 @@ def get_model_display(data: dict[str, Any], config: dict[str, Any]) -> str | Non
         data: Statusline input JSON (as a dict), expected to carry a `model`
             object with `display_name` and/or `id` string fields.
         config: Configuration dictionary; expects a `model` sub-dict with
-            `enabled` (bool), `source` ('display_name' or 'id'), and `color`.
+            `enabled` (bool), `source` ('display_name' or 'id'), `color`,
+            and `bold`.
 
     Returns:
         ANSI-colored model string, or None when the feature is disabled, the
@@ -226,8 +492,149 @@ def get_model_display(data: dict[str, Any], config: dict[str, Any]) -> str | Non
     if not isinstance(text, str) or not text:
         return None
 
-    color_code = _resolve_color(model_config.get('color'), 'magenta')
-    return f'{color_code}{text}{Colors.RESET}'
+    return _paint(text, model_config.get('color'), 'magenta', model_config.get('bold') is True)
+
+
+def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Format the context-window usage as a compact colored statusline segment.
+
+    Reads `data['context_window']` and renders "{label}{percent}%" where the
+    percentage of the model context window in use comes from
+    `used_percentage` when it is numeric, or is computed from
+    `total_input_tokens` / `context_window_size` otherwise. The percentage is
+    clamped to 0-100 and colored by the configured thresholds (ok below
+    warn_threshold, warn at warn_threshold or above, crit at crit_threshold
+    or above). The percentage is measured against the full model context
+    window; auto-compaction triggers before the window is exhausted, so the
+    crit threshold approximates "compaction imminent".
+
+    When `show_tokens` is enabled and the token fields are numeric, appends
+    " (Nk/Mk)" with used and total tokens rounded to thousands (a 1M-token
+    window renders as 1000k).
+
+    Returns None when:
+        - The context block is disabled.
+        - `data['context_window']` is absent or not a dict.
+        - No percentage is available: `used_percentage` is not numeric and the
+          token fields cannot support the fallback computation (for example
+          before the first API response, when both are null or zero).
+
+    Args:
+        data: Statusline input JSON (as a dict).
+        config: Configuration dictionary; expects a `context` sub-dict with
+            `enabled` (bool), `label` (str), `warn_threshold` (int),
+            `crit_threshold` (int), `ok_color`, `warn_color`, `crit_color`,
+            `show_tokens` (bool), and `bold`.
+
+    Returns:
+        Colored compact segment string, or None when display is suppressed.
+    """
+    context_config = _as_dict(config.get('context'), DEFAULT_CONFIG['context'])
+    if not context_config.get('enabled', True):
+        return None
+
+    context_window = data.get('context_window')
+    if not isinstance(context_window, dict):
+        return None
+    context_dict = cast('dict[str, Any]', context_window)
+
+    total_input = context_dict.get('total_input_tokens')
+    window_size = context_dict.get('context_window_size')
+
+    pct_value = context_dict.get('used_percentage')
+    if isinstance(pct_value, (int, float)):
+        pct = float(pct_value)
+    elif (
+        isinstance(total_input, (int, float))
+        and isinstance(window_size, (int, float))
+        and window_size > 0
+        and total_input > 0
+    ):
+        pct = float(round(total_input / window_size * 100))
+    else:
+        return None
+
+    pct = max(0.0, min(100.0, pct))
+
+    warn = context_config.get('warn_threshold', 70)
+    crit = context_config.get('crit_threshold', 90)
+    if not isinstance(warn, (int, float)):
+        warn = 70
+    if not isinstance(crit, (int, float)):
+        crit = 90
+
+    if pct >= crit:
+        color_value, default_name = context_config.get('crit_color'), 'red'
+    elif pct >= warn:
+        color_value, default_name = context_config.get('warn_color'), 'yellow'
+    else:
+        color_value, default_name = context_config.get('ok_color'), 'green'
+
+    label = context_config.get('label', 'ctx:')
+    if not isinstance(label, str):
+        label = 'ctx:'
+
+    text = f'{label}{int(pct)}%'
+    if (
+        context_config.get('show_tokens', False)
+        and isinstance(total_input, (int, float))
+        and isinstance(window_size, (int, float))
+        and window_size > 0
+    ):
+        text += f' ({round(total_input / 1000)}k/{round(window_size / 1000)}k)'
+
+    return _paint(text, color_value, default_name, context_config.get('bold') is True)
+
+
+def get_effort_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Format the reasoning-effort level as a compact colored statusline segment.
+
+    Reads `data['effort']` and renders "{label}{level}". The `effort` object
+    is present only when the current model supports reasoning effort, so the
+    segment auto-hides for models without an effort concept. The color comes
+    from the `level_colors` mapping; a level missing from the mapping (for
+    example an unknown future level name) still renders, using the block's
+    fallback `color`.
+
+    Returns None when:
+        - The effort block is disabled.
+        - `data['effort']` is absent or not a dict.
+        - The `level` field is not a non-empty string.
+
+    Args:
+        data: Statusline input JSON (as a dict).
+        config: Configuration dictionary; expects an `effort` sub-dict with
+            `enabled` (bool), `label` (str), `color`, `level_colors` (dict
+            mapping level names to color names), and `bold`.
+
+    Returns:
+        Colored compact segment string, or None when display is suppressed.
+    """
+    effort_config = _as_dict(config.get('effort'), DEFAULT_CONFIG['effort'])
+    if not effort_config.get('enabled', True):
+        return None
+
+    effort = data.get('effort')
+    if not isinstance(effort, dict):
+        return None
+    effort_dict = cast('dict[str, Any]', effort)
+
+    level = effort_dict.get('level')
+    if not isinstance(level, str) or not level:
+        return None
+
+    level_colors = _as_dict(effort_config.get('level_colors'), {})
+    color_value: object = level_colors.get(level)
+    if not isinstance(color_value, str) or color_value.lower() not in COLOR_MAP:
+        color_value = effort_config.get('color')
+
+    label = effort_config.get('label', 'eff:')
+    if not isinstance(label, str):
+        label = 'eff:'
+
+    return _paint(f'{label}{level}', color_value, 'cyan', effort_config.get('bold') is True)
 
 
 def get_suffix_display(config: dict[str, Any]) -> str | None:
@@ -246,8 +653,7 @@ def get_suffix_display(config: dict[str, Any]) -> str | None:
     if not text:
         return None
 
-    color_code = _resolve_color(suffix_config.get('color'), 'cyan')
-    return f'{color_code}{text}{Colors.RESET}'
+    return _paint(text, suffix_config.get('color'), 'cyan', suffix_config.get('bold') is True)
 
 
 def get_update_indicator(config: dict[str, Any]) -> str | None:
@@ -255,15 +661,21 @@ def get_update_indicator(config: dict[str, Any]) -> str | None:
 
     Reads the existence-based marker file to determine if a newer version
     of the environment configuration is available. Returns a formatted
-    YELLOW indicator string or None if no update is available.
+    indicator string (YELLOW by default) or None if no update is available.
 
     Args:
-        config: Configuration dictionary with optional 'command_name' key.
+        config: Configuration dictionary with an optional 'command_name' key
+            and an `update` sub-dict with `enabled` (bool), `color`, and
+            `bold`.
 
     Returns:
-        ANSI-colored update indicator string, or None if no update available
-        or command_name is not configured.
+        ANSI-colored update indicator string, or None if no update available,
+        command_name is not configured, or the block is disabled.
     """
+    update_config = _as_dict(config.get('update'), DEFAULT_CONFIG['update'])
+    if not update_config.get('enabled', True):
+        return None
+
     command_name = config.get('command_name', '')
     if not command_name:
         return None
@@ -278,7 +690,12 @@ def get_update_indicator(config: dict[str, Any]) -> str | None:
         if not available_version:
             return None
 
-        return f'{Colors.YELLOW}UPD v{available_version}{Colors.RESET}'
+        return _paint(
+            f'UPD v{available_version}',
+            update_config.get('color'),
+            'yellow',
+            update_config.get('bold') is True,
+        )
     except Exception:
         return None
 
@@ -288,8 +705,9 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
     Format the Claude rate-limits status as a compact colored statusline segment.
 
     Reads `data['rate_limits']` and returns a compact string of the form
-    `5h:N%  7d:M%` colored by threshold (GREEN below warn_threshold,
-    YELLOW at warn_threshold or above, RED at crit_threshold or above).
+    `5h:N%  7d:M%` colored by threshold (ok_color below warn_threshold,
+    warn_color at warn_threshold or above, crit_color at crit_threshold or
+    above; GREEN/YELLOW/RED by default).
 
     The 5-hour and 7-day window key names are configurable via
     `config['rate_limits']['window_keys']` to accommodate any future change in
@@ -306,7 +724,8 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
         data: Statusline input JSON (as a dict).
         config: Configuration dictionary; expects a `rate_limits` sub-dict with
                 `enabled` (bool), `warn_threshold` (int), `crit_threshold` (int),
-                and `window_keys` (dict mapping 'five_hour' and 'seven_day' to
+                `ok_color`, `warn_color`, `crit_color`, `bold`, and
+                `window_keys` (dict mapping 'five_hour' and 'seven_day' to
                 the verified JSON key names).
 
     Returns:
@@ -328,6 +747,7 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
         warn = 70
     if not isinstance(crit, (int, float)):
         crit = 90
+    bold = rl_config.get('bold') is True
 
     segments: list[str] = []
     for label, key in (('5h', window_keys.get('five_hour')), ('7d', window_keys.get('seven_day'))):
@@ -341,12 +761,12 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
         if not isinstance(pct, (int, float)):
             continue
         if pct >= crit:
-            color = Colors.RED
+            color_value, default_name = rl_config.get('crit_color'), 'red'
         elif pct >= warn:
-            color = Colors.YELLOW
+            color_value, default_name = rl_config.get('warn_color'), 'yellow'
         else:
-            color = Colors.GREEN
-        segments.append(f'{color}{label}:{int(pct)}%{Colors.RESET}')
+            color_value, default_name = rl_config.get('ok_color'), 'green'
+        segments.append(_paint(f'{label}:{int(pct)}%', color_value, default_name, bold))
 
     if not segments:
         return None
@@ -423,57 +843,51 @@ def main() -> None:
             print('Status: Error reading input')
             return
 
-    # Extract session_id (full ID for traceability)
-    session_id = data.get('session_id', 'unknown')
+    if not isinstance(data, dict):
+        print('Status: Error reading input')
+        return
+    payload = cast('dict[str, Any]', data)
 
-    # Extract project directory (basename only)
-    workspace = data.get('workspace', {})
-    project_dir = workspace.get('project_dir', workspace.get('current_dir', ''))
-    project_name = Path(project_dir).name if project_dir else 'unknown'
+    def render_branch() -> str | None:
+        """Render the branch block, invoking git only when the block is enabled.
 
-    # Get git branch
-    cwd = data.get('cwd', project_dir)
-    git_branch = get_git_branch(cwd)
+        Returns:
+            ANSI-colored branch string, or None when the block is disabled.
+        """
+        branch_config = _as_dict(config.get('branch'), DEFAULT_CONFIG['branch'])
+        if not branch_config.get('enabled', True):
+            return None
+        workspace = _as_dict(payload.get('workspace'), {})
+        project_dir = workspace.get('project_dir', workspace.get('current_dir', ''))
+        cwd = payload.get('cwd', project_dir)
+        return get_branch_display(get_git_branch(cwd), config)
 
-    # Get line change statistics
-    line_stats = get_claude_lines_display(data)
+    renderers: dict[str, Callable[[], str | None]] = {
+        'model': lambda: get_model_display(payload, config),
+        'project': lambda: get_project_display(payload, config),
+        'branch': render_branch,
+        'session': lambda: get_session_display(payload, config),
+        'lines': lambda: get_claude_lines_display(payload, config),
+        'context': lambda: get_context_display(payload, config),
+        'effort': lambda: get_effort_display(payload, config),
+        'rate_limits': lambda: get_rate_limits_display(payload, config),
+        'update': lambda: get_update_indicator(config),
+        'suffix': lambda: get_suffix_display(config),
+    }
 
-    # Build branch display
-    branch_display = get_branch_display(git_branch, config)
+    separator = config.get('separator')
+    if not isinstance(separator, str):
+        separator = ' | '
 
-    # Build status line parts. The model segment, when enabled, leads the line.
+    # Render blocks in the configured sequence, skipping hidden ones (None)
+    # and empty ones ('').
     parts: list[str] = []
+    for name in _resolve_block_order(config):
+        segment = renderers[name]()
+        if segment:
+            parts.append(segment)
 
-    model_display = get_model_display(data, config)
-    if model_display:
-        parts.append(model_display)
-
-    parts.extend([
-        f'{Colors.YELLOW}{project_name}{Colors.RESET}',
-        branch_display,
-        f'{Colors.CYAN}{session_id}{Colors.RESET}',
-    ])
-
-    # Add line stats if present (separate block after session ID)
-    if line_stats:
-        parts.append(line_stats)
-
-    # Add rate-limits display if available (between line stats and update indicator)
-    rate_limits_display = get_rate_limits_display(data, config)
-    if rate_limits_display:
-        parts.append(rate_limits_display)
-
-    # Add update indicator if available
-    update_indicator = get_update_indicator(config)
-    if update_indicator:
-        parts.append(update_indicator)
-
-    # Add suffix if configured
-    suffix = get_suffix_display(config)
-    if suffix:
-        parts.append(suffix)
-
-    print(' | '.join(parts))
+    print(separator.join(parts))
 
 
 if __name__ == '__main__':
