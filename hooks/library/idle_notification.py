@@ -4,12 +4,17 @@
 # dependencies = ["pyyaml", "desktop-notifier>=6.0.0"]
 # ///
 """
-Idle Notification Hook for Claude Code.
+Desktop Notification Hook for Claude Code.
 
-Sends a desktop notification when Claude Code enters idle mode,
-waiting for user input after 60+ seconds of inactivity.
+Sends a desktop notification for configured Notification event types. By
+default only idle_prompt (Claude Code is waiting for user input after 60+
+seconds of inactivity) triggers a notification; the notification_types config
+key selects additional types such as permission_prompt, elicitation_dialog,
+agent_needs_input, or agent_completed, with optional per-type messages via
+the notification.messages config key.
 
-Trigger: Notification with matcher: idle_prompt
+Trigger: Notification with a matcher covering the configured types
+(matcher: idle_prompt by default)
 
 main() relies on its helpers being correct under the platform contract; only
 one external-condition handler exists (json.JSONDecodeError for malformed stdin
@@ -55,9 +60,23 @@ def _load_config_loader() -> ModuleType:
 # Default configuration - used when no config file provided
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
+    # Notification types that trigger a desktop notification; any other type
+    # exits silently, even when the hook registration matcher is broader. A
+    # null or non-list value falls back to this default; an explicit empty
+    # list disables all notifications.
+    # Claude Code defines: permission_prompt (Claude needs approval),
+    # idle_prompt (Claude is waiting for the next prompt), auth_success,
+    # elicitation_dialog (an MCP server awaits form input),
+    # elicitation_complete, elicitation_response, agent_needs_input (a local
+    # background session is blocked on input), agent_completed (a local
+    # background session finished or failed)
+    'notification_types': ['idle_prompt'],
     'notification': {
         'title': 'Claude Code',
         'message': 'Claude is waiting for your input',
+        # Per-type message overrides keyed by notification type; a type
+        # without an entry falls back to 'message'
+        'messages': {},
         'app_name': 'Claude Code',
         # Use default system sound for notifications
         'sound': True,
@@ -315,15 +334,26 @@ def main() -> None:
         if hook_event_name != 'Notification':
             sys.exit(0)
 
-        # Verify this is an idle_prompt notification
+        # Verify this notification type is configured to notify. A null or
+        # non-list notification_types value is treated as unset (falling back
+        # to the default) so a partially edited config file cannot crash the
+        # hook or degrade the membership check to substring matching; an
+        # explicit empty list disables all notifications.
         notification_type = input_data.get('notification_type', '')
-        if notification_type != 'idle_prompt':
+        allowed_types = config.get('notification_types')
+        if not isinstance(allowed_types, list):
+            allowed_types = DEFAULT_CONFIG['notification_types']
+        if notification_type not in allowed_types:
             sys.exit(0)
 
-        # Get notification configuration
+        # Get notification configuration; a null title, message, or per-type
+        # message entry is treated as unset so a drafted config value cannot
+        # send None into the notification backends
         notification_config = config.get('notification', DEFAULT_CONFIG['notification'])
-        title = notification_config.get('title', DEFAULT_CONFIG['notification']['title'])
-        message = notification_config.get('message', DEFAULT_CONFIG['notification']['message'])
+        title: str = notification_config.get('title') or DEFAULT_CONFIG['notification']['title']
+        type_messages: dict[str, str] = notification_config.get('messages') or {}
+        default_message: str = notification_config.get('message') or DEFAULT_CONFIG['notification']['message']
+        message = type_messages.get(notification_type) or default_message
 
         # Optionally include the original message from Claude Code
         original_message = input_data.get('message', '')

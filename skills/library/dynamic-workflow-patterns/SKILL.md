@@ -1,6 +1,6 @@
 ---
 name: dynamic-workflow-patterns
-description: "Pattern taxonomy, agent role combinations, model routing, and resilience discipline for Claude Code dynamic workflows. ALWAYS load this skill before authoring or running any Workflow tool script -- whenever the user says ultracode, asks for a workflow, or the task calls for multi-agent orchestration such as fan-out, tournaments, adversarial verification, triage at scale, ranking large lists, deep verification of claims, or root-cause hunting; do not hand-roll a workflow from memory when this skill applies. Also covers surviving server errors such as HTTP 529, recovering interrupted runs, and honoring token budgets."
+description: Pattern taxonomy, agent role combinations, model routing, and resilience discipline for Claude Code dynamic workflows. ALWAYS load this skill before authoring or running any Workflow tool script, and ALWAYS load it when the user mentions "workflow" or "ultracode" in any form -- or when the task calls for multi-agent orchestration such as fan-out, tournaments, adversarial verification, triage at scale, ranking large lists, deep verification of claims, or root-cause hunting; do not hand-roll a workflow from memory when this skill applies. Also covers surviving server errors such as HTTP 529, recovering interrupted runs, and honoring token budgets.
 ---
 
 # Dynamic Workflow Patterns
@@ -91,12 +91,17 @@ The reason this works: readers of untrusted content hold no privileges, so promp
 
 ## Model Routing
 
-Fan-out multiplies token cost by width, so concentrate intelligence where judgment concentrates.
+Fan-out multiplies token cost by width, so concentrate intelligence where judgment concentrates. Routing is about spending tokens where they buy quality, never about saving them at the price of a wrong answer: quality is the priority, and when genuinely unsure which tier a role needs, give it the stronger model.
+
+The model option takes Claude Code's model aliases -- haiku, sonnet, opus, fable -- and each resolves to the current recommended model of its tier, so a script names the tier and stays current as models advance.
 
 - Default is inherit: omit the model option so the session's model governs, unless a role clearly wants otherwise.
-- haiku fits high-volume mechanical roles: classification labels, dedupe checks, simple pairwise comparisons, quarantined readers spawned in bulk.
-- sonnet fits standard workers, verifiers, and readers.
-- opus or fable fits the judgment-concentrated roles -- synthesis, final judging, trusted acting, and ambiguous taste calls -- where one wrong verdict poisons everything downstream.
+- haiku, the fast and efficient tier for simple tasks, fits high-volume mechanical roles: classification labels, dedupe checks, simple pairwise comparisons, quarantined readers spawned in bulk.
+- sonnet, the everyday coding tier, fits standard workers, verifiers, and readers.
+- opus, the complex-reasoning tier, fits judgment-concentrated roles -- synthesis, final judging, trusted acting, and ambiguous taste calls -- where one wrong verdict poisons everything downstream.
+- fable, the most capable tier for the hardest and longest-running tasks, fits the roles where the whole workflow's value rides on one output: the final verdict of a deep root-cause hunt, architecture-level synthesis, a long-running trusted actor that must hold a thread from start to finish.
+
+Not every role needs fable or even opus -- the strongest tier on a bulk mechanical role buys no quality, only cost -- but ties always break upward, because a wrong verdict costs more than the tokens a cheaper tier saves.
 
 The routing-by-research move: a classifier agent first investigates the task's actual complexity -- how many files the module spans, the shape of the codebase -- and only then routes to a cheaper or stronger model, because complexity is invisible from the prompt alone: "explain how the auth module works" can be a cheap task or a hard one depending on what the classifier finds.
 
