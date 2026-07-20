@@ -1,13 +1,13 @@
 ---
 name: dynamic-workflow-patterns
-description: Pattern taxonomy, agent role combinations, model routing, and resilience discipline for Claude Code dynamic workflows. ALWAYS load this skill before authoring or running any Workflow tool script, and ALWAYS load it when the user mentions "workflow" or "ultracode" in any form -- or when the task calls for multi-agent orchestration such as fan-out, tournaments, adversarial verification, triage at scale, ranking large lists, deep verification of claims, or root-cause hunting; do not hand-roll a workflow from memory when this skill applies. Also covers surviving server errors such as HTTP 529, recovering interrupted runs, and honoring token budgets.
+description: Pattern taxonomy, agent role combinations, model routing, and resilience discipline for Claude Code dynamic workflows. ALWAYS load this skill before authoring or running any Workflow tool script, and ALWAYS load it when the user mentions "workflow" or "ultracode" in any form -- or when the task calls for multi-agent orchestration such as fan-out, tournaments, adversarial verification, triage at scale, ranking large lists, deep verification of claims, or root-cause hunting; do not hand-roll a workflow from memory when this skill applies.
 ---
 
 # Dynamic Workflow Patterns
 
 The Workflow tool description already teaches the script API, the opt-in rules, and the execution mechanics; every mention of those below is a one-line anchor, never a re-teach.
 
-This skill adds what that description lacks: which pattern to pick, which agent roles to combine for each task family, which model to give each role, and how to keep a workflow alive through server errors and interruptions.
+This skill adds what that description lacks: which pattern to pick, which agent roles to combine for each task family, which model to give each role, how to behave between launch and completion, and how to keep a workflow alive through server errors and interruptions.
 
 ## Why Single Contexts Fail
 
@@ -22,6 +22,8 @@ Pattern choice and prompt design follow from knowing which failure mode the work
 ### When Not to Use a Workflow
 
 Workflows multiply token cost by the number of agents, so apply the does-it-really-need-more-compute test first: most routine coding tasks show none of the three failure modes, and for them the default harness is cheaper, faster, and just as correct. A routine change does not need a panel of five reviewers.
+
+The test applies per phase, not once per task: a task large enough to earn a wide research fan-out still does not earn a review panel for the three-paragraph edit that falls out of it. Size each phase's agent count to that phase's own delta and risk, and verify small deltas inline -- an ultracode or high-effort session raises the ceiling for phases that need the compute, never the floor for phases that do not.
 
 ## The Six Patterns and How to Choose
 
@@ -95,7 +97,7 @@ Fan-out multiplies token cost by width, so concentrate intelligence where judgme
 
 The model option takes Claude Code's model aliases -- haiku, sonnet, opus, fable -- and each resolves to the current recommended model of its tier, so a script names the tier and stays current as models advance.
 
-- Default is inherit: omit the model option so the session's model governs, unless a role clearly wants otherwise.
+- Route every role through the tier list below before reaching for inherit: the session model was picked for the conversation's stakes, not for each subagent's task, so omitting the model option is right only where the role's tier and the session's tier happen to agree. In a session running a top tier, every unrouted bulk role silently becomes a top-tier agent -- the most expensive possible way to read a file -- so a wide fan-out with no model options is a routing failure, not a safe default.
 - haiku, the fast and efficient tier for simple tasks, fits high-volume mechanical roles: classification labels, dedupe checks, simple pairwise comparisons, quarantined readers spawned in bulk.
 - sonnet, the everyday coding tier, fits standard workers, verifiers, and readers.
 - opus, the complex-reasoning tier, fits judgment-concentrated roles -- synthesis, final judging, trusted acting, and ambiguous taste calls -- where one wrong verdict poisons everything downstream.
@@ -146,6 +148,16 @@ To recover an interrupted or partially failed run, stop it, edit the persisted s
 The determinism ban on the current-time and randomness built-ins protects this same replay cache; when a timestamp or seed is genuinely needed, compute it outside the script and pass it in via args.
 
 Guard budget-scaled loops on budget.total being set, because it is not set when the user gave no cap, and inside long loops check budget.spent() to stop cleanly and emit accumulated results before the hard ceiling makes agent() throw.
+
+## After Launch: The Harness Delivers Completion
+
+The Workflow call returns as soon as the run starts, the runtime executes the script in the background while the session stays responsive, and when the run finishes the harness injects a completion notification carrying the result into the conversation on its own, waking the model for the next turn. Delivery is push, never pull: nothing the model does makes the report arrive sooner, and the same push contract covers every background primitive -- background subagents and backgrounded Bash commands equally notify on completion.
+
+So after launching a run, either continue genuinely independent work or end the turn with a short status note that the workflow is running; an ended turn is the correct idle state, because the completion notification resumes the conversation automatically the moment the run finishes.
+
+Never simulate waiting -- no Bash sleep timers, no watcher subagents dispatched to wait for the run, no status-polling loops. An artificial wait duplicates a delivery mechanism the harness already guarantees, and it cannot be timed because the finish time is unknowable in advance: a guess that runs long leaves the finished result undelivered until the timer expires, a guess that runs short just spawns another wait, and a user forced to break the timer with an interrupt hands the model an ambiguous stop signal easily misread as canceling the whole task. The fake wait burns tokens and delays the very result it claims to await.
+
+Mid-run, reading the run's output or transcript files is for diagnosing a run that looks wrong, never a completion check, and the /workflows view plus the task panel below the input box exist so the user can watch live progress -- point the user there when they ask how the run is going, and otherwise leave the run alone until the notification arrives.
 
 ## Operations: Budgets, Quick Workflows, Recurring Runs, and Prompting
 
