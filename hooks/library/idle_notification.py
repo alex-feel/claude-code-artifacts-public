@@ -36,6 +36,7 @@ are intentionally preserved.
 import asyncio
 import importlib.util
 import json
+import os
 import platform
 import shlex
 import shutil
@@ -363,8 +364,13 @@ def main() -> None:
         # Send notification
         send_notification(title, message, config)
 
-        # Always exit successfully - notification failure should not block Claude Code
-        sys.exit(0)
+        # Terminate without interpreter finalization: after a dispatch, native
+        # notification backends (WinRT COM on Windows) can abort the process
+        # during teardown, turning a delivered notification into a nonzero
+        # exit that Claude Code reports as a hook failure. os._exit skips that
+        # teardown so the exit code always reflects the dispatch outcome, and
+        # notification failure never blocks Claude Code either.
+        os._exit(0)
 
     except json.JSONDecodeError:
         # Malformed stdin from the Claude Code wrapper: external contract
