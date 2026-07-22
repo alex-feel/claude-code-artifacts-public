@@ -8,9 +8,17 @@
 
 A public library of reusable Claude Code artifacts — skills, hooks, rules, environment configurations, agents, and slash commands — ready to drop into any Claude Code setup.
 
-Each artifact is a self-contained building block for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview). You can consume it two ways: reference it from a single environment YAML file and let the [Claude Code Toolbox](https://github.com/alex-feel/claude-code-toolbox) install it for you (by raw URL or a shared `base-url`), or copy a rule, a hook, or a skill straight into your `~/.claude/` directory.
+Each artifact is a self-contained building block for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview). You can consume it two ways: reference it from a single environment YAML file and let the [Claude Code Toolbox](https://github.com/alex-feel/claude-code-toolbox) install it for you (by raw URL or a shared `base-url`), or copy a rule, a hook, or a skill straight into your `~/.claude/` directory. Ready-made environment configurations take the first way further: one YAML file wires several artifacts into a complete setup the toolbox installs in one command.
 
 The sections below are a catalog of what is available today, grouped by artifact type. Each entry links to the artifact itself and to that type's README for conventions and installation details.
+
+## Environments
+
+[Environment configurations](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) are single YAML files that declare a complete Claude Code setup — artifacts, MCP servers, settings, dependencies, and more — installed in one command by the [Claude Code Toolbox](https://github.com/alex-feel/claude-code-toolbox). They live under [`environments/library/`](environments/library/); see [`environments/README.md`](environments/README.md) for conventions, validation, and how to consume one.
+
+### `serena.yaml`
+
+Gives any Claude Code setup IDE-grade code intelligence in one install: registers the [Serena](https://github.com/oraios/serena) MCP server in a curated LSP-only mode — semantic symbol navigation (`find_symbol`, `find_referencing_symbols`, `get_symbols_overview`), LSP diagnostics, and symbol-aware editing (`rename_symbol`, `replace_symbol_body`, `safe_delete_symbol`) — while Serena's file I/O, shell, memory, onboarding, and dashboard tools stay disabled so they never compete with Claude Code's built-ins. The configuration is composed of supporting files from this repository that work as parts of this setup rather than on their own: the [`serena-tool-selection`](skills/library/serena-tool-selection/SKILL.md) skill, which routes code navigation to the semantic tools and documents their known limitations with workarounds; two Search/Grep steering tiers — the advisory [`serena_tool_enforcement.py`](hooks/library/serena_tool_enforcement.py) command hook with its [companion configuration](hooks/configs/universal/serena_tool_enforcement_config.yaml), plus an enforcing LLM prompt gate defined inline in the YAML; and the Serena runtime files [`lsp-only.yml`](extras/serena/lsp-only.yml) and [`system_prompt.yml`](extras/serena/system_prompt.yml) deployed to `~/.serena/`. See [`environments/library/serena.yaml`](environments/library/serena.yaml).
 
 ## Skills
 
@@ -42,13 +50,16 @@ Every artifact is a plain file addressable by its raw URL:
 https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/<path>
 ```
 
-The [Claude Code Toolbox](https://github.com/alex-feel/claude-code-toolbox) installs artifacts from a single environment YAML file. For example, wiring the idle-notification hook to the `Notification` event:
+The [Claude Code Toolbox](https://github.com/alex-feel/claude-code-toolbox) installs artifacts from a single environment YAML file. For example, wiring the idle-notification hook to the `Notification` event — the shared helper module travels through `files-to-download`, because every `hooks.files` entry must be referenced by a hook event:
 
 ```yaml
+files-to-download:
+  - source: "https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/hook_config_loader.py"
+    dest: "~/.claude/hooks/hook_config_loader.py"
+
 hooks:
   files:
     - "https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/idle_notification.py"
-    - "https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/hook_config_loader.py"
   events:
     - event: "Notification"
       matcher: "idle_prompt"
@@ -56,7 +67,7 @@ hooks:
       command: "idle_notification.py"
 ```
 
-Skills install through the toolbox `skills` key or the `skills` CLI; each type's README shows the exact shape. See the toolbox [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) for the full YAML reference (skills, hooks, MCP servers, settings, inheritance, and more).
+Skills install through the toolbox `skills` key or the `skills` CLI; each type's README shows the exact shape. An environment configuration from [`environments/library/`](environments/library/) installs directly: point the toolbox `setup-environment` command at its raw URL, or compose it into your own configuration through the `inherit` key. See the toolbox [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) for the full YAML reference (skills, hooks, MCP servers, settings, inheritance, and more).
 
 ## Adding a new artifact
 
