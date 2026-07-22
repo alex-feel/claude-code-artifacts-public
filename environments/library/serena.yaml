@@ -1,0 +1,161 @@
+# Serena LSP Tools Integration
+# Registers the Serena MCP server (https://github.com/oraios/serena) in a
+# curated LSP-only mode: only the semantic code-navigation and symbol-aware
+# editing tools backed by a language server are exposed, while Serena's file
+# I/O, shell, memory, onboarding, and dashboard tools stay disabled so they
+# never compete with the host agent's own built-in tools. The bundled skill
+# teaches the agent when to prefer the Serena tools over plain text search,
+# and two steering hooks (a deterministic advisory nudge and an enforcing
+# LLM gate on Search/Grep) keep the agent on the semantic tools at runtime.
+#
+# Prerequisites:
+#   - uv (provides the uvx launcher used to run Serena; auto-installed by the
+#     toolbox setup scripts)
+#   - Language servers are downloaded on demand by Serena per language; no
+#     manual installation is required for the common languages
+
+name: Serena LSP Tools Integration
+
+description: |
+  Serena MCP server in LSP-only mode: semantic symbol navigation
+  (find_symbol, find_referencing_symbols, get_symbols_overview, and more),
+  LSP diagnostics, and symbol-aware editing (rename_symbol,
+  replace_symbol_body, safe_delete_symbol, and more), plus a tool-selection
+  skill and two Search/Grep steering hooks that keep the agent on these
+  tools for code navigation.
+
+# Environment variables
+os-env-variables:
+  # MCP server STARTUP timeout in milliseconds (default 30000). Serena is
+  # spawned through uvx, which resolves and installs the package from git on
+  # first launch; that cold start can exceed the default, so the timeout is
+  # raised to keep the server from being killed mid-download.
+  MCP_TIMEOUT: "300000"
+
+# Additional files to download.
+# Every dest below is an explicit, unique FILE path (never a bare directory):
+# files-to-download entries are merged identity-based on the final file path
+# during configuration composition, so explicit file-path dests keep every
+# entry's identity distinct under any inheritance chain.
+files-to-download:
+  # Shared libraries imported at runtime (via importlib from its own
+  # directory) by the Serena tool-enforcement hook below; they must land as
+  # siblings of the hook script in ~/.claude/hooks/. They are delivered here
+  # rather than through hooks.files because hooks.files entries must each be
+  # referenced by a hook event, which library modules are not.
+  - source: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/hook_config_loader.py
+    dest: ~/.claude/hooks/hook_config_loader.py
+
+  - source: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/hook_json_output.py
+    dest: ~/.claude/hooks/hook_json_output.py
+
+  # Serena lsp-only context: enables the LSP-backed tools and excludes the
+  # file I/O, shell, memory, onboarding, project-management, and IDE-bound
+  # tools from the MCP tool surface
+  - source: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/extras/serena/lsp-only.yml
+    dest: ~/.serena/contexts/lsp-only.yml
+
+  # Serena system prompt override: empties Serena's own prompt contributions
+  # (the instructions manual and the connect-time bootstrap string) so the
+  # host application fully governs agent behavior
+  - source: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/extras/serena/system_prompt.yml
+    dest: ~/.serena/prompt_templates/system_prompt.yml
+
+# Tool-selection skill: mandatory routing rules for choosing Serena LSP tools
+# over built-in text search for code navigation, a complete reference of the
+# exposed tools, and their known limitations with workarounds
+skills:
+  - name: serena-tool-selection
+    base: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/skills/library/serena-tool-selection
+    files:
+      - SKILL.md
+
+# MCP server registration. scope: user registers the server in ~/.claude.json
+# for all projects. The command starts Serena from the current upstream main
+# branch, activates the lsp-only context deployed above, derives the active
+# project from the working directory, and disables the web dashboard.
+mcp-servers:
+  - name: serena
+    scope: user
+    command: uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context lsp-only --project-from-cwd --enable-web-dashboard false
+
+# Serena tool steering hooks: two complementary tiers that keep the agent on
+# the semantic Serena tools when a plain text search would silently miss
+# aliases and renamed imports.
+hooks:
+  files:
+    # Serena tool enforcement (command hook for deterministic cases)
+    - https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/serena_tool_enforcement.py
+    - https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/configs/universal/serena_tool_enforcement_config.yaml
+
+  events:
+    # Serena tool steering - COMMAND TIER (fast, deterministic, advisory).
+    # Allows the search and injects a Serena nudge for symbol-definition
+    # patterns in code files; never blocks.
+    - event: PreToolUse
+      matcher: Search|Grep
+      type: command
+      command: serena_tool_enforcement.py
+      config: serena_tool_enforcement_config.yaml
+
+    # Serena tool steering - AGENTIC PROMPT TIER (LLM judgment, enforcing).
+    # A single-turn LLM evaluation (type: prompt) over each Search/Grep call.
+    # It DENIES the search only when the call is clearly a symbol-DEFINITION
+    # lookup in a code file, returning a reason that names the exact Serena
+    # tool (find_symbol) plus a graceful-fallback note; it ALLOWS every other
+    # case, including bare-name and usage cross-validation greps,
+    # comment/string searches, and non-code files. Prompt hooks answer with
+    # flat {"ok": bool, "reason": str} -- ok:false denies and returns the
+    # reason to the agent as the tool error; ok:true proceeds. Prompt hooks
+    # cannot inject advisory context, so a targeted deny is the only steering
+    # signal available here. Read and Edit are intentionally NOT matched: a
+    # deny is never warranted from their input alone and would strand the
+    # agent. Cost note: this runs a fast model on every matched Search/Grep
+    # call.
+    - event: PreToolUse
+      matcher: Search|Grep
+      type: prompt
+      prompt: >-
+        You are a fast, single-purpose tool-routing gate for code navigation. You
+        are given a PreToolUse tool call (Search or Grep) as JSON at the end of
+        this prompt; read its tool_input.pattern and tool_input.path or glob.
+        Serena's find_symbol resolves a symbol DEFINITION (function, class,
+        method, type, or variable) semantically -- following aliases and renamed
+        imports that a text search misses -- so for a definition lookup it is
+        strictly better than a text search. DENY the search (respond ok=false)
+        ONLY when ALL THREE hold: (1) the pattern targets where a NAMED symbol is
+        DEFINED, for example "def NAME", "class NAME", "func NAME", "function
+        NAME", "interface NAME", "type NAME", or "struct NAME", or an equivalent
+        definition-site search; AND (2) the call clearly targets a code/source
+        file (for example a path or glob ending in .py, .ts, .tsx, .js, .go, .rs,
+        .java, .rb, .c, .cpp, or .cs), NOT a config, data, markdown, or docs file
+        (.md, .json, .yaml, .toml, .txt, .env); AND (3) a specific symbol name is
+        identifiable in the pattern. ALLOW the search (respond ok=true) in EVERY
+        other case and whenever you are unsure -- never strand the agent. You MUST
+        ALWAYS ALLOW: a bare symbol-name search, or any search for USAGES or
+        REFERENCES of a symbol (these are legitimate low-recall cross-validation
+        greps that complement Serena's reference search and must never be
+        blocked); searches for text inside comments or string literals; searches
+        whose target file type cannot be determined (no path or glob, or a broad
+        directory); searches in non-code, config, data, markdown, or docs files;
+        regex or plain-text patterns that are not a symbol-definition lookup; and
+        anything Serena cannot resolve. Respond with ONLY a raw JSON object and
+        nothing else -- no markdown fences and no prose. To deny, respond exactly
+        {"ok": false, "reason": "Use Serena find_symbol on the symbol 'NAME'
+        (include_body=True) to locate its definition semantically; if Serena is
+        unavailable or finds nothing, this text search is the correct fallback."},
+        replacing NAME with the actual symbol. To allow, respond exactly
+        {"ok": true}. Include no other field. The tool call to evaluate:
+        $ARGUMENTS
+
+post-install-notes: |
+  Serena is registered as an MCP server named 'serena' (user scope).
+
+  Next steps:
+  1. Restart Claude Code so the new MCP server and the downloaded Serena
+     configuration files are picked up.
+  2. The first session start is slower: uvx resolves and installs Serena
+     from git, and Serena downloads a language server for the project
+     language on demand.
+  3. Verify the connection with /mcp inside Claude Code; the serena server
+     should be listed as connected.

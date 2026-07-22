@@ -1,0 +1,110 @@
+# Serena Tool Enforcement Hook Configuration (advisory command tier)
+# This hook is a fast, deterministic, advisory tier of Serena steering. It NEVER
+# blocks: for a symbol-definition pattern in a code file it injects a nudge toward
+# the semantic Serena tools and lets the search proceed; otherwise it stays
+# silent. The nudge is advisory only and does not by itself guarantee the search
+# runs, since other steering may apply to the same call.
+
+# Whether the hook is enabled (optional, default: true)
+enabled: true
+
+# Code file extensions where symbol pattern detection applies
+# If file extension is NOT in this list, the search is APPROVED automatically
+# (non-code files like .yaml, .json, .md don't need symbol pattern checking)
+code_extensions:
+  - .py
+  - .pyw
+  - .pyi
+  - .ts
+  - .tsx
+  - .js
+  - .jsx
+  - .mjs
+  - .cjs
+  - .java
+  - .kt
+  - .kts
+  - .scala
+  - .clj
+  - .cljs
+  - .go
+  - .rs
+  - .c
+  - .cc
+  - .cpp
+  - .cxx
+  - .h
+  - .hpp
+  - .hxx
+  - .zig
+  - .nim
+  - .d
+  - .cs
+  - .fs
+  - .fsx
+  - .rb
+  - .php
+  - .lua
+  - .pl
+  - .pm
+  - .r
+  - .jl
+  - .ex
+  - .exs
+  - .erl
+  - .hrl
+  - .hs
+  - .elm
+  - .ml
+  - .mli
+  - .swift
+  - .m
+  - .mm
+  - .dart
+  - .v
+  - .sv
+  - .vhd
+  - .vhdl
+
+# DESIGN NOTE: These patterns detect DEFINITION searches (e.g., "def my_function").
+# Simple function name searches (e.g., "my_function") do NOT match and pass through.
+# This is intentional: agents MUST be able to Grep for function names to cross-validate
+# find_referencing_symbols results, because LSP-based reference search has low recall
+# for symbols reached through dynamic imports, runtime sys.path manipulation, or
+# attribute chains on runtime objects.
+
+# Symbol keyword patterns that trigger an advisory NUDGE (never a block)
+# These are checked with simple string containment: if the search pattern CONTAINS
+# any of these, the search is allowed and a Serena nudge is injected alongside it.
+# Note: Each entry should have a trailing space where appropriate to avoid false matches
+blocked_patterns:
+  # Python
+  - "def "
+  - "async def "
+  - "class "
+  # JavaScript/TypeScript
+  - "function "
+  - "export function"
+  - "export class"
+  - "export const"
+  - "interface "
+  # Go
+  - "func "
+  - "struct "
+  # Rust
+  - "fn "
+  - "trait "
+  - "impl "
+
+# Advisory nudge template (never a block)
+# Variables: {pattern}, {keyword}
+nudge_message:
+  header: "SERENA SUGGESTION:"
+  explanation: "This pattern contains '{keyword}', which usually indicates a code-symbol or definition lookup."
+  suggestion: "For code symbols, the Serena tools resolve definitions and usages semantically -- following aliases and renamed imports that a text search misses:"
+  tools:
+    - "find_symbol(name, include_body=True) - locate a definition"
+    - "find_referencing_symbols(name, path) - locate usages"
+    - "get_symbols_overview(path) - outline a file structure"
+  footer: "Prefer the Serena tool when it is available. If Serena is unavailable or cannot resolve the symbol, or you are grepping a bare name to cross-validate reference completeness, this text search is the right choice."
+  pattern_label: "Pattern: {pattern}"

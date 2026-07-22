@@ -1,0 +1,77 @@
+# See Serena's documentation for more details on concept of contexts.
+description: Description of the context, not used in the code.
+prompt: Prompt that will form part of the system prompt/initial instructions for agents started in this context.
+excluded_tools:
+  - activate_project
+  - check_onboarding_performed
+  - create_text_file
+  - delete_lines
+  - delete_memory
+  - edit_memory
+  - execute_shell_command
+  # - find_declaration  # LSP tool
+  - find_file
+  # - find_implementations  # LSP tool
+  # - find_referencing_symbols  # LSP tool
+  # - find_symbol  # LSP tool
+  # - get_diagnostics_for_file  # LSP tool
+  - get_current_config
+  - open_dashboard
+  # - get_symbols_overview  # LSP tool
+  - initial_instructions
+  # - insert_after_symbol  # LSP tool
+  - insert_at_line
+  # - insert_before_symbol  # LSP tool
+  - jet_brains_find_referencing_symbols
+  - jet_brains_find_symbol
+  - jet_brains_get_symbols_overview
+  - jet_brains_find_declaration
+  - jet_brains_find_implementations
+  - jet_brains_inline_symbol
+  - jet_brains_move
+  - jet_brains_rename
+  - jet_brains_safe_delete
+  - jet_brains_type_hierarchy
+  - jet_brains_debug
+  - jet_brains_run_inspections
+  - jet_brains_list_inspections
+  - list_dir
+  - list_memories
+  - onboarding
+  - prepare_for_new_conversation
+  - read_file
+  - read_memory
+  - rename_memory
+  - remove_project
+  # - rename_symbol  # LSP tool
+  - replace_content
+  # - replace_in_files  # deliberately included (not LSP): atomic multi-file text replace with dry-run preview
+  - replace_lines
+  # - replace_symbol_body  # LSP tool
+  # - restart_language_server  # LSP tool
+  # - safe_delete_symbol  # LSP tool
+  - search_for_pattern
+  - serena_info
+  - summarize_changes
+  - switch_modes
+  - think_about_collected_information
+  - think_about_whether_you_are_done
+  - write_memory
+  - list_queryable_projects
+  - query_project
+
+# several tools are excluded by default and have to be explicitly included by the user
+included_optional_tools:
+  - restart_language_server
+  - get_diagnostics_for_symbol
+
+# mapping of tool names to an override of their descriptions (the default description is the docstring of the Tool's apply method).
+# Sometimes, tool descriptions are too long (e.g., for ChatGPT), or users may want to override them for another reason.
+tool_description_overrides: {}
+
+# whether to assume that Serena shall only work on a single project in this context (provided that a project is given
+# when Serena is started).
+# If set to true and a project is provided at startup, the set of tools is limited to those required by the project's
+# concrete configuration, and other tools are excluded completely, allowing the set of tools to be minimal.
+# The `activate_project` tool will, therefore, be disabled in this case, as project switching is not allowed.
+single_project: true

@@ -1,0 +1,17 @@
+# Override Serena's prompt templates so the host application (e.g., AEGIS) fully
+# governs agent behavior through its own system prompt, skills, and rules, and
+# Serena contributes no prompt text of its own. When this file is placed in
+# ~/.serena/prompt_templates/, Serena merges prompt templates per key, so only the
+# keys defined here are replaced; every other prompt keeps its default.
+#
+# Two distinct Serena prompt fields must both be emptied:
+# - system_prompt: the full "Serena Instructions Manual", delivered on demand when
+#   the initial_instructions tool is invoked. Emptied so that tool yields nothing.
+# - connection_prompt: the one-sentence bootstrap string Serena passes to the MCP
+#   client as the server "instructions" at connection time; its default tells the
+#   agent to call initial_instructions first. Emptied so the connect-time
+#   instructions are blank and agents are never directed to Serena's own manual or
+#   to the initial_instructions tool, which this deployment intentionally excludes.
+prompts:
+  system_prompt: ""
+  connection_prompt: ""
