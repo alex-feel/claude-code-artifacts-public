@@ -58,7 +58,7 @@ Before ANY code navigation task, look for `mcp__serena__find_symbol` in your too
 | Find all USAGES/CALLS of a function                                                                             | `find_referencing_symbols(name, path)`                 |
 | Understand a file's STRUCTURE (functions/classes outline)                                                       | `get_symbols_overview(path)`                           |
 | Get LSP DIAGNOSTICS (errors/warnings) for a file                                                                | `get_diagnostics_for_file(path)`                       |
-| Get LSP DIAGNOSTICS scoped to a specific symbol (OPT-IN; requires Serena config -- see Known Limitations)       | `get_diagnostics_for_symbol(name, path)`               |
+| Get LSP DIAGNOSTICS scoped to a specific symbol (OPT-IN upstream; already enabled -- see Known Limitations)     | `get_diagnostics_for_symbol(name, path)`               |
 | RENAME a symbol across the codebase                                                                             | `rename_symbol(old_name, new_name, path)`              |
 | REPLACE a function's implementation                                                                             | `replace_symbol_body(name, path, new_body)`            |
 | INSERT code after a symbol                                                                                      | `insert_after_symbol(name, path, new_code)`            |
@@ -100,7 +100,7 @@ The Serena tools granted by this deployment, grouped by category.
 - `find_declaration` vs `find_symbol`: `find_symbol` returns the definition body; `find_declaration` returns the declaration site. The two coincide for interpreted languages and diverge for compiled ones (e.g., C++ `.h` vs `.cpp`).
 - `find_implementations`: Supported for Java, TypeScript, Go, C#, Rust. **NOT supported for Python** (see Known Limitations -- LSP `-32601`). Use `find_referencing_symbols` + `code-review-graph` `inheritors_of` as the Python workaround.
 - `find_referencing_symbols`: High precision, **CRITICALLY LOW RECALL** for dynamic imports / runtime `sys.path` / attribute chains (see Known Limitations). ALWAYS cross-validate with Grep when completeness matters.
-- `get_diagnostics_for_symbol`: **OPT-IN** -- enabled via the in-repo source `extras/serena/lsp-only.yml` (deployed by the toolbox setup to `~/.serena/contexts/lsp-only.yml`). See Known Limitations.
+- `get_diagnostics_for_symbol`: **OPT-IN upstream** -- already enabled by this deployment via the in-repo source `extras/serena/lsp-only.yml` (deployed by the toolbox setup to `~/.serena/contexts/lsp-only.yml`). See Known Limitations.
 
 ### Mutation (editing)
 
@@ -183,24 +183,19 @@ Serena's default Python LSP backend is Pyright, which deliberately does NOT adve
 
 ## Known Limitation: `get_diagnostics_for_symbol` is OPT-IN
 
-This tool is OPTIONAL in Serena upstream (inherits `ToolMarkerOptional` -- disabled by default). This deployment launches Serena with `--context lsp-only`.
+This tool is OPTIONAL in Serena upstream (inherits `ToolMarkerOptional` -- disabled by default). This deployment launches Serena with `--context lsp-only` and already opts the tool in: the in-repo source file `extras/serena/lsp-only.yml` (the canonical source-of-truth in the repository that deploys this skill) lists it in `included_optional_tools:` alongside `restart_language_server`:
 
-**To enable:**
+```yaml
+included_optional_tools:
+  - restart_language_server
+  - get_diagnostics_for_symbol
+```
 
-1. Edit the in-repo source file `extras/serena/lsp-only.yml` (the canonical source-of-truth in the repository that deploys this skill; do NOT edit the deployed copy at `~/.serena/contexts/lsp-only.yml` directly, since the toolbox setup overwrites it on the next install). In the `included_optional_tools:` list, add `get_diagnostics_for_symbol` alongside the existing `restart_language_server`:
-
-   ```yaml
-   included_optional_tools:
-     - restart_language_server
-     - get_diagnostics_for_symbol
-   ```
-
-2. Commit the change and re-run the toolbox setup, which propagates `extras/serena/lsp-only.yml` to `~/.serena/contexts/lsp-only.yml` via the `files-to-download` mechanism.
-3. Restart Claude Code (or call `mcp__serena__restart_language_server`) for the change to take effect.
+The toolbox setup propagates that source file to `~/.serena/contexts/lsp-only.yml` via the `files-to-download` mechanism, so no manual enablement step is needed.
 
 **Note on `~/.serena/serena_config.yml`:** this is a Serena-level (not deployment-level) configuration with NO in-repo source. Under the current `--context lsp-only` mode, editing it is not required and not recommended; the in-repo `extras/serena/lsp-only.yml` is the canonical source-of-truth for the deployed `included_optional_tools` list.
 
-If the tool returns "tool not found" errors despite the YAML allow list including `mcp__serena__get_diagnostics_for_symbol`, the cause is missing opt-in -- not a YAML defect.
+If the tool returns "tool not found" errors despite the YAML allow list including `mcp__serena__get_diagnostics_for_symbol`, the deployed copy at `~/.serena/contexts/lsp-only.yml` is stale (it predates the opt-in) -- not a YAML defect. Do NOT edit the deployed copy directly, since the toolbox setup overwrites it on the next install; re-run the toolbox setup so it re-downloads the current `extras/serena/lsp-only.yml`, then restart Claude Code (or call `mcp__serena__restart_language_server`) for the refreshed context to take effect.
 
 </known_limitations>
 
