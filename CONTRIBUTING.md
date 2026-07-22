@@ -13,7 +13,7 @@ Follow the README inside each type directory for the exact layout and naming:
 | Type | Location | Read first |
 | ---- | -------- | ---------- |
 | Skill | `skills/library/<skill-name>/SKILL.md` | [skills/README.md](skills/README.md) |
-| Hook | `hooks/library/*.py` (+ `hooks/configs/*.yaml`) | [hooks/README.md](hooks/README.md) |
+| Hook | `hooks/library/*.py` (+ `hooks/configs/universal/*.yaml`) | [hooks/README.md](hooks/README.md) |
 | Rule | `rules/library/*.md` | [rules/README.md](rules/README.md) |
 | Environment configuration | `environments/library/*.yaml` (+ `environments/templates/`) | [environments/README.md](environments/README.md) |
 | Agent | `agents/library/*.md` | [agents/README.md](agents/README.md) |
