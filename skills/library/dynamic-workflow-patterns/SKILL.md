@@ -93,20 +93,24 @@ The reason this works: readers of untrusted content hold no privileges, so promp
 
 ## Model Routing
 
-Fan-out multiplies token cost by width, so concentrate intelligence where judgment concentrates. Routing spends tokens where they buy quality, never saving them at the price of a wrong answer -- but the tier is a capability dial, not a rescue. Escalate the tier when a cheaper model given full context and a well-scoped unit would still judge wrongly; when the failure is mechanical instead -- skipped items, exhausted exploration, an agent that never returned -- fix the unit's scope and budget (next section), because a stronger model does not rescue an oversized unit, it only burns longer before dying.
+Fan-out multiplies token cost by width, so concentrate intelligence where judgment concentrates: routing spends tokens where they buy quality and never saves them at the price of a wrong answer. Two rules make that concrete, and both are absolute -- every agent() call carries an explicit model option, and the only two tiers a workflow routes to are sonnet and opus.
 
-The model option takes Claude Code's model aliases -- haiku, sonnet, opus, fable -- and each resolves to the current recommended model of its tier, so a script names the tier and stays current as models advance; never pin dated model IDs inside a workflow script.
+**Explicit always, inherited never.** An agent() call with no model option does not pick a sensible default; it silently inherits whatever the session's main loop happens to be running, which leaves the fan-out's cost and capability invisible in the script, flips both the moment the user switches session model, and hands a top-tier context to roles that only read a file. Omitting the option is therefore a defect, not a default -- and it stays a defect in a session on a cheaper tier, where the same silence quietly starves a judgment role instead. This standing rule overrides the Workflow tool description's advice to omit the option and inherit.
 
-A model override is validated against session-level settings the script never sees -- the effort level and the thinking configuration -- and tiers differ in which combinations they accept, so a routed tier can be rejected at launch with an instant, zero-token 400 even though the session's own model runs fine. That rejection is deterministic -- retrying the same route fails identically -- so treat any instant zero-token failure as a configuration rejection, never as a dead server, and reroute the role: inherit the session model, or use a tier that has already succeeded in this run.
+**Two tiers, never more.** The routing question is binary -- is this unit's output judgment-bearing or mechanical -- so the menu is binary too, which keeps every call decidable at a glance and the cost of a fan-out predictable. Both extremes are off the menu: fable multiplies a frontier price across every unit of the fan-out without a matching gain on a unit that is already well scoped, and haiku's savings are not worth a wrong label or a missed finding in a stage everything downstream depends on. Sonnet is the floor, opus is the ceiling, and a workflow that routes outside them is misrouted.
 
-- haiku, the fast and efficient tier, fits high-volume mechanical roles: classification labels, dedupe checks, simple pairwise comparisons, quarantined readers spawned in bulk.
-- sonnet, the everyday workhorse, fits standard workers, verifiers, readers, and claim checkers; each generation's sonnet commonly lands near the previous generation's opus on agentic work, so bulk roles lose almost no quality here while costing a fraction.
-- opus, the expert tier and the recommended starting point for complex agentic work, fits judgment-concentrated roles -- synthesis, final judging, trusted acting, ambiguous taste calls -- where one wrong verdict poisons everything downstream.
-- fable, the frontier tier at roughly double the opus price, is a specialist, not a better default: reserve it for the few units genuinely beyond the opus tier -- the final verdict of a deep root-cause hunt, architecture-level synthesis over a sprawling system, a long-running trusted actor that must hold one thread from start to finish. A workflow that routes every role to fable buys cost, not quality.
+- **sonnet, the default and the workhorse** -- classification labels, dedupe checks, pairwise comparisons, quarantined readers spawned in bulk, standard workers, verifiers, refuters, readers, and claim checkers. Each generation's sonnet commonly lands near the previous generation's opus on agentic work, so bulk roles lose almost no quality here while costing a fraction. Start every role here and move it up only for a stated reason.
+- **opus, the expert tier** -- synthesis, final judging, trusted acting, ambiguous taste calls, and the hypothesis or root-cause stage the whole run's value rides on: the roles where one wrong verdict poisons everything downstream. Escalate a role to it when sonnet, given full context and a well-scoped unit, would still judge wrongly.
 
-Route relative to the session, because unrouted agents inherit the session model. When the session itself runs fable, frontier judgment already lives in the main loop -- the orchestrator authors the script, reads every result, and writes the final synthesis -- so subagents rarely need fable at all: opus covers the judgment-concentrated stages while the frontier calls stay in the main loop. When the session runs opus, the logic inverts: route the one or two hardest units up to fable, buying frontier capability exactly where the whole run's value rides on one output. Either way, in a session on a top tier every unrouted bulk role silently becomes a top-tier agent -- the most expensive possible way to read a file -- so a wide fan-out with no model options is a routing failure, not a safe default.
+The tier is a capability dial, not a rescue: when the failure is mechanical instead -- skipped items, exhausted exploration, an agent that never returned -- fix the unit's scope and budget (next section), because opus does not rescue an oversized unit, it only burns longer before dying.
 
-The routing-by-research move: a classifier agent first investigates the task's actual complexity -- how many files the module spans, the shape of the codebase -- and only then routes to a cheaper or stronger model, because complexity is invisible from the prompt alone: "explain how the auth module works" can be a cheap task or a hard one depending on what the classifier finds. When two tiers genuinely tie for a judgment role after that investigation, break the tie upward, because a wrong verdict costs more than the tokens a cheaper tier saves; a tie on a bulk mechanical role breaks downward, because the strongest tier buys no quality there.
+The model option takes Claude Code's model aliases, and a workflow uses exactly two of them -- sonnet and opus -- each resolving to the current recommended model of its tier, so a script names the tier and stays current as models advance; never pin dated model IDs inside a workflow script.
+
+A model override is validated against session-level settings the script never sees -- the effort level and the thinking configuration -- and tiers differ in which combinations they accept, so a routed tier can be rejected at launch with an instant, zero-token 400 even though the session's own model runs fine. That rejection is deterministic -- retrying the same route fails identically -- so treat any instant zero-token failure as a configuration rejection, never as a dead server, and reroute the role to the other permitted tier, preferring one that has already succeeded in this run. Dropping the option to inherit is not an available fallback: when both sonnet and opus are rejected, stop and report the configuration mismatch rather than launching agents whose tier nobody chose.
+
+Because every call names its tier, the session's own model never leaks into the fan-out: the orchestrator's tier governs the main loop -- it authors the script, reads every result, and writes the final synthesis -- while the script's model options alone govern the agents, which is what keeps a wide fan-out from silently paying top-tier rates to read files. Grep the script for agent( before launching and confirm every hit carries a model, in the same pre-launch pass that hunts bare await agent( in the resilience section below; a call missing its tier is the same class of defect as an unwrapped await.
+
+The routing-by-research move: a classifier agent first investigates the task's actual complexity -- how many files the module spans, the shape of the codebase -- and only then routes the work to sonnet or opus, because complexity is invisible from the prompt alone: "explain how the auth module works" can be a cheap task or a hard one depending on what the classifier finds. When the two tiers genuinely tie for a judgment role after that investigation, break the tie upward to opus, because a wrong verdict costs more than the tokens sonnet saves; a tie on a bulk mechanical role breaks downward to sonnet, because opus buys no quality there.
 
 ## Sizing the Unit of Work
 
@@ -161,11 +165,11 @@ async function tryAgent(prompt, opts, attempts) {
 
 const results = []
 const dropped = []
-const raw = await parallel(items.map(it => () => tryAgent(promptFor(it), { label: `work:${it.id}` }, 3)))
+const raw = await parallel(items.map(it => () => tryAgent(promptFor(it), { label: `work:${it.id}`, model: 'sonnet' }, 3)))
 raw.forEach((r, i) => (r ? results.push(r) : dropped.push(items[i].id)))
 if (dropped.length) log(`quorum ${results.length}/${items.length}; dropped: ${dropped.join(', ')}`)
 
-const rawVotes = await parallel(refutePrompts.map((p, i) => () => tryAgent(p, { label: `refute:${i}` }, 2)))
+const rawVotes = await parallel(refutePrompts.map((p, i) => () => tryAgent(p, { label: `refute:${i}`, model: 'sonnet' }, 2)))
 const votes = rawVotes.filter(Boolean)                     // three refuters launched; maybe fewer spoke
 const refuted = votes.filter(v => v.refuted).length
 const survives = votes.length > 0 && refuted < Math.ceil(votes.length / 2)
@@ -206,7 +210,7 @@ Workflows are not only for large tasks: a quick workflow, such as a fast adversa
 
 Pair repeatable workflows -- triage, research, verification -- with recurring-interval execution and set a hard completion goal, so scheduled runs neither drift nor stop early.
 
-When authoring a workflow or shaping a user's request into one, name the pattern, the roles, the stop condition, the output schema and its length caps for any structured result, the exploration budget per role, and the model tier per role: the more the request mirrors this taxonomy, the closer the generated script lands to the intended architecture.
+When authoring a workflow or shaping a user's request into one, name the pattern, the roles, the stop condition, the output schema and its length caps for any structured result, the exploration budget per role, and the explicit model tier per role -- sonnet or opus, on every single agent, never left to inheritance: the more the request mirrors this taxonomy, the closer the generated script lands to the intended architecture.
 
 ## Saving, Sharing, and Templates
 
