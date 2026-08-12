@@ -9,10 +9,13 @@ Status line hook for Claude Code.
 Displays: [model] | project | branch | session | [+N/-M] | [ctx:N%] | [eff:level] | [rate_limits] | [update] | [suffix]
 
 This script receives JSON via stdin and outputs a colored status line.
-The first line of stdout becomes the status line text.
+Claude Code renders each line of stdout as its own status row: the first
+line carries the block-based status line, and an optional second row
+carries notifications, printed only when at least one notification is
+active so it takes no space otherwise.
 
-The line is composed of named blocks: model, project, branch, session, lines,
-context, effort, rate_limits, update, and suffix.
+The first line is composed of named blocks: model, project, branch, session,
+lines, context, effort, rate_limits, update, and suffix.
 
 Features:
 - Configurable block order: the 'order' config list controls the segment
@@ -32,11 +35,16 @@ Features:
 - Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
 - Update availability indicator: shows "UPD v{version}" when a marker file is present
 - Configurable suffix: optional custom text at end of status line
+- Notifications row (disabled by default): an optional second output row for
+  notification segments; currently carries the /compact reminder, which
+  appears when context-window usage reaches a configurable threshold and
+  escalates its styling at a second threshold
 
-The 'order' list controls sequence only. Visibility is controlled exclusively
-by each block's 'enabled' flag and by payload presence (the suffix block shows
-only when its text is non-empty; the update block shows only when a command
-name is configured, the marker file exists, and the block is enabled).
+The 'order' list controls sequence only and applies to the first row. Block
+visibility is controlled exclusively by each block's 'enabled' flag and by
+payload presence (the suffix block shows only when its text is non-empty; the
+update block shows only when a command name is configured, the marker file
+exists, and the block is enabled).
 
 Configuration is loaded from external YAML file when provided.
 """
@@ -209,6 +217,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'text': '',
         'color': 'cyan',
         'bold': False,
+    },
+    'notifications': {
+        # Off by default: the shipped hook prints a single status row. When
+        # enabled, a second row is printed below the status line whenever at
+        # least one notification segment is active.
+        'enabled': False,
+        # Separator between notification segments when several are active.
+        'separator': ' | ',
+        'compact_reminder': {
+            'enabled': True,
+            # Context-window usage percent at which the reminder appears
+            # (warn styling) and at which it escalates (crit styling).
+            'threshold_percent': 45,
+            'crit_threshold_percent': 60,
+            # {percent} in either template is replaced with the integer
+            # usage percent.
+            'message': 'ctx {percent}% - consider /compact',
+            'crit_message': 'ctx {percent}% - run /compact now',
+            'warn_color': 'yellow',
+            'crit_color': 'red',
+            'bold': False,
+        },
     },
 }
 
@@ -495,6 +525,46 @@ def get_model_display(data: dict[str, Any], config: dict[str, Any]) -> str | Non
     return _paint(text, model_config.get('color'), 'magenta', model_config.get('bold') is True)
 
 
+def _context_used_percent(data: dict[str, Any]) -> float | None:
+    """Extract the context-window usage percentage from the statusline payload.
+
+    Reads `data['context_window']` and returns the percentage of the model
+    context window in use, clamped to 0-100. The value comes from
+    `used_percentage` when it is numeric, or is computed from
+    `total_input_tokens` / `context_window_size` otherwise.
+
+    Args:
+        data: Statusline input JSON (as a dict).
+
+    Returns:
+        The clamped percentage, or None when the payload carries no usable
+        percentage (for example before the first API response, when both the
+        percentage and the token fields are null or zero).
+    """
+    context_window = data.get('context_window')
+    if not isinstance(context_window, dict):
+        return None
+    context_dict = cast('dict[str, Any]', context_window)
+
+    total_input = context_dict.get('total_input_tokens')
+    window_size = context_dict.get('context_window_size')
+
+    pct_value = context_dict.get('used_percentage')
+    if isinstance(pct_value, (int, float)):
+        pct = float(pct_value)
+    elif (
+        isinstance(total_input, (int, float))
+        and isinstance(window_size, (int, float))
+        and window_size > 0
+        and total_input > 0
+    ):
+        pct = float(round(total_input / window_size * 100))
+    else:
+        return None
+
+    return max(0.0, min(100.0, pct))
+
+
 def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
     """
     Format the context-window usage as a compact colored statusline segment.
@@ -542,20 +612,9 @@ def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | N
     total_input = context_dict.get('total_input_tokens')
     window_size = context_dict.get('context_window_size')
 
-    pct_value = context_dict.get('used_percentage')
-    if isinstance(pct_value, (int, float)):
-        pct = float(pct_value)
-    elif (
-        isinstance(total_input, (int, float))
-        and isinstance(window_size, (int, float))
-        and window_size > 0
-        and total_input > 0
-    ):
-        pct = float(round(total_input / window_size * 100))
-    else:
+    pct = _context_used_percent(data)
+    if pct is None:
         return None
-
-    pct = max(0.0, min(100.0, pct))
 
     warn = context_config.get('warn_threshold', 70)
     crit = context_config.get('crit_threshold', 90)
@@ -773,6 +832,110 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
     return '  '.join(segments)
 
 
+def get_compact_reminder_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Format the /compact reminder as a notification segment when usage is high.
+
+    Compacting well before the auto-compaction boundary preserves response
+    quality, so this segment nudges toward a manual /compact early. Reads the
+    context-window usage percentage from the statusline payload (via
+    `used_percentage`, falling back to `total_input_tokens` /
+    `context_window_size`) and renders the configured message once usage
+    reaches `threshold_percent` (warn styling), switching to the crit message
+    and styling at `crit_threshold_percent`. The `{percent}` placeholder in
+    either message template is replaced with the integer usage percent.
+
+    Returns None when:
+        - The compact_reminder feature is disabled.
+        - No usage percentage is available from the payload.
+        - Usage is below threshold_percent.
+
+    Args:
+        data: Statusline input JSON (as a dict).
+        config: Configuration dictionary; expects a `notifications` sub-dict
+            with a `compact_reminder` sub-dict carrying `enabled` (bool),
+            `threshold_percent` (number), `crit_threshold_percent` (number),
+            `message` (str), `crit_message` (str), `warn_color`, `crit_color`,
+            and `bold`.
+
+    Returns:
+        Colored notification segment string, or None when suppressed.
+    """
+    notifications_config = _as_dict(config.get('notifications'), DEFAULT_CONFIG['notifications'])
+    reminder_config = _as_dict(
+        notifications_config.get('compact_reminder'),
+        DEFAULT_CONFIG['notifications']['compact_reminder'],
+    )
+    if not reminder_config.get('enabled', True):
+        return None
+
+    pct = _context_used_percent(data)
+    if pct is None:
+        return None
+
+    threshold = reminder_config.get('threshold_percent', 45)
+    crit = reminder_config.get('crit_threshold_percent', 60)
+    if not isinstance(threshold, (int, float)):
+        threshold = 45
+    if not isinstance(crit, (int, float)):
+        crit = 60
+
+    if pct < threshold:
+        return None
+
+    if pct >= crit:
+        template = reminder_config.get('crit_message')
+        fallback_template = 'ctx {percent}% - run /compact now'
+        color_value, default_name = reminder_config.get('crit_color'), 'red'
+    else:
+        template = reminder_config.get('message')
+        fallback_template = 'ctx {percent}% - consider /compact'
+        color_value, default_name = reminder_config.get('warn_color'), 'yellow'
+    if not isinstance(template, str) or not template:
+        template = fallback_template
+
+    # Plain replace instead of str.format keeps stray braces in a configured
+    # message from raising.
+    text = template.replace('{percent}', str(int(pct)))
+    return _paint(text, color_value, default_name, reminder_config.get('bold') is True)
+
+
+def get_notifications_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Render the notifications row printed below the main status line.
+
+    Collects the active notification segments (currently the /compact
+    reminder) and joins them with the configured separator. The row is
+    rendered only when the notifications feature is enabled AND at least one
+    segment is active, so an empty row never reserves space.
+
+    Args:
+        data: Statusline input JSON (as a dict).
+        config: Configuration dictionary; expects a `notifications` sub-dict
+            with `enabled` (bool), `separator` (str), and per-notification
+            sub-dicts.
+
+    Returns:
+        The joined notifications row string, or None when the feature is
+        disabled or no notification is active.
+    """
+    notifications_config = _as_dict(config.get('notifications'), DEFAULT_CONFIG['notifications'])
+    if not notifications_config.get('enabled', False):
+        return None
+
+    producers: tuple[Callable[[dict[str, Any], dict[str, Any]], str | None], ...] = (
+        get_compact_reminder_display,
+    )
+    segments = [segment for producer in producers if (segment := producer(data, config))]
+    if not segments:
+        return None
+
+    separator = notifications_config.get('separator')
+    if not isinstance(separator, str):
+        separator = ' | '
+    return separator.join(segments)
+
+
 def get_git_branch(cwd: str) -> str:
     """Get current git branch or status.
 
@@ -888,6 +1051,12 @@ def main() -> None:
             parts.append(segment)
 
     print(separator.join(parts))
+
+    # Optional second row: printed only when the notifications feature is
+    # enabled and at least one notification is active.
+    notifications_row = get_notifications_display(payload, config)
+    if notifications_row is not None:
+        print(notifications_row)
 
 
 if __name__ == '__main__':

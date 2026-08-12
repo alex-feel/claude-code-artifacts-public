@@ -49,6 +49,14 @@ files-to-download:
   - source: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/hook_json_output.py
     dest: ~/.claude/hooks/hook_json_output.py
 
+  # uv sidecar lockfile for the Serena tool-enforcement hook below: uv run
+  # detects a `<script>.py.lock` file next to a script and installs straight
+  # from it, skipping dependency resolution and registry-metadata refresh at
+  # every hook launch, which avoids transient uv cache-write failures on
+  # Windows and makes hook startup deterministic and faster
+  - source: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/hooks/library/serena_tool_enforcement.py.lock
+    dest: ~/.claude/hooks/serena_tool_enforcement.py.lock
+
   # Serena lsp-only context: enables the LSP-backed tools and excludes the
   # file I/O, shell, memory, onboarding, project-management, and IDE-bound
   # tools from the MCP tool surface
