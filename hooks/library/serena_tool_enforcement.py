@@ -46,6 +46,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from typing import cast
 
 
 def _load_config_loader() -> ModuleType:
@@ -209,7 +210,9 @@ def is_non_code_target(tool_input: dict[str, Any], config: dict[str, Any]) -> bo
     every determined extension is outside ``code_extensions``. An indeterminate
     scope (a directory, a broad glob, or no path/glob at all) returns False so a
     definition-keyword search still receives the nudge; the keyword itself is the
-    code-intent signal in that case.
+    code-intent signal in that case. A field carrying a non-string value is read
+    as absent for the same reason -- it determines no extension, and feeding it to
+    the glob expansion would raise instead of producing a verdict.
 
     Args:
         tool_input: The PreToolUse ``tool_input`` mapping (reads ``path``, ``glob``).
@@ -219,7 +222,12 @@ def is_non_code_target(tool_input: dict[str, Any], config: dict[str, Any]) -> bo
         True when the scope is determinably non-code, False otherwise.
     """
     code_extensions: list[str] = config.get('code_extensions', DEFAULT_CONFIG['code_extensions'])
-    candidates = candidate_extensions(tool_input.get('path', '')) | candidate_extensions(tool_input.get('glob', ''))
+
+    def scope_field(key: str) -> str:
+        value: Any = tool_input.get(key)
+        return value if isinstance(value, str) else ''
+
+    candidates = candidate_extensions(scope_field('path')) | candidate_extensions(scope_field('glob'))
     if not candidates:
         return False
     return all(ext not in code_extensions for ext in candidates)
@@ -282,8 +290,12 @@ def main() -> None:
         if not config.get('enabled', True):
             sys.exit(0)
 
-        # Read JSON input from stdin
-        input_data = json.load(sys.stdin)
+        # Read JSON input from stdin. A body that parses as JSON but is not the
+        # documented mapping carries no event to act on, so it is read as an empty
+        # one and falls through the event gate below; reading its fields directly
+        # would raise and leave this hook with no verdict at all.
+        raw_input: Any = json.load(sys.stdin)
+        input_data: dict[str, Any] = cast('dict[str, Any]', raw_input) if isinstance(raw_input, dict) else {}
 
         # Validate event type
         hook_event_name = input_data.get('hook_event_name', '')
@@ -295,9 +307,12 @@ def main() -> None:
         if tool_name not in ('Search', 'Grep'):
             sys.exit(0)
 
-        # Extract tool input
-        tool_input = input_data.get('tool_input', {})
-        pattern = tool_input.get('pattern', '')
+        # Extract tool input, reading a non-mapping value and a non-string pattern
+        # as absent for the same reason as above.
+        raw_tool_input: Any = input_data.get('tool_input')
+        tool_input: dict[str, Any] = cast('dict[str, Any]', raw_tool_input) if isinstance(raw_tool_input, dict) else {}
+        raw_pattern: Any = tool_input.get('pattern')
+        pattern: str = raw_pattern if isinstance(raw_pattern, str) else ''
 
         # DECISION 1: the search is scoped (by path or glob) to non-code file
         # types only -> ALLOW SILENTLY (no nudge needed). An indeterminate scope
