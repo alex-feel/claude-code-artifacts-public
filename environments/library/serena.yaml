@@ -24,13 +24,32 @@ description: |
   skill and two Search/Grep steering hooks that keep the agent on these
   tools for code navigation.
 
+# Claude-level settings, deep-merged into ~/.claude/settings.json.
+user-settings:
+  # Claude Code applies this block by assigning it into its own process environment at
+  # startup, which buys two things over an OS-level variable. The value takes effect at
+  # the next session start rather than only in terminals opened after the install, and
+  # it WINS over an OS-level variable of the same name instead of deferring to it.
+  # Values must be strings -- an unquoted YAML integer is rejected, not coerced.
+  env:
+    # MCP server STARTUP timeout in milliseconds (default 30000). Serena is
+    # spawned through uvx, which resolves and installs the package from git on
+    # first launch; that cold start can exceed the default, so the timeout is
+    # raised to keep the server from being killed mid-download.
+    MCP_TIMEOUT: "300000"
+
 # Environment variables
 os-env-variables:
-  # MCP server STARTUP timeout in milliseconds (default 30000). Serena is
-  # spawned through uvx, which resolves and installs the package from git on
-  # first launch; that cold start can exceed the default, so the timeout is
-  # raised to keep the server from being killed mid-download.
-  MCP_TIMEOUT: "300000"
+  # TRANSITIONAL -- a deletion, not a setting. MCP_TIMEOUT now lives in the
+  # user-settings `env` block above, and this null removes the OS-level copy that
+  # earlier installs of this environment created. It is spelled out rather than simply
+  # omitted because an omitted key leaves the stale OS value in place, where it is
+  # harmless inside a session but misleading to anyone reading `echo $MCP_TIMEOUT`.
+  #
+  # Retire it once the machines running this environment have completed one install
+  # carrying it. A name parked here permanently also deletes the variable for anything
+  # else on the machine that sets it, which is not this environment's business.
+  MCP_TIMEOUT: null
 
 # Additional files to download.
 # Every dest below is an explicit, unique FILE path (never a bare directory):
