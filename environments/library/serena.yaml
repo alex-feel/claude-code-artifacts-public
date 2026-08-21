@@ -133,16 +133,16 @@ hooks:
     # case, including bare-name and usage cross-validation greps,
     # comment/string searches, and non-code files. Prompt hooks answer with
     # flat {"ok": bool, "reason": str}; ok:true proceeds. On ok:false Claude
-    # Code denies the call and does two things at once. It hands the agent the
-    # reason as the tool error, but prefixed by this hook's entire prompt text
-    # in square brackets with the argument placeholder left unsubstituted --
-    # Claude Code renders the prompt-tier deny that way, and no field of the
-    # prompt-hook configuration suppresses it, so every deny costs the
-    # receiving agent roughly two kilobytes of noise ahead of the actionable
-    # sentence. It also ends the turn, so the agent cannot act on the advice
-    # until it is prompted again; Claude Code's continueOnBlock field keeps the
-    # turn alive, but the environment-configuration format carries no key for
-    # it, so it cannot be set from here. Prompt hooks also cannot inject
+    # Code denies the call and hands the agent the reason as the tool error,
+    # but prefixed by this hook's entire prompt text in square brackets with
+    # the argument placeholder left unsubstituted -- Claude Code renders the
+    # prompt-tier deny that way, and no field of the prompt-hook configuration
+    # suppresses it, so every deny costs the receiving agent roughly two
+    # kilobytes of noise ahead of the actionable sentence. continue-on-block
+    # leaves the denied search blocked and lets the turn survive it, so the
+    # agent reads the reason and re-issues the lookup through find_symbol
+    # without waiting to be prompted again; a deny ends the turn without it,
+    # stranding whatever work was in flight. Prompt hooks cannot inject
     # advisory context, so a targeted deny is the only steering signal
     # available. Read and Edit are intentionally NOT matched: a deny is never
     # warranted from their input alone. Cost note: this runs a fast model on
@@ -150,6 +150,7 @@ hooks:
     - event: PreToolUse
       matcher: Search|Grep
       type: prompt
+      continue-on-block: true
       prompt: >-
         You are a fast, single-purpose tool-routing gate for code navigation. You
         are given a PreToolUse tool call (Search or Grep) as JSON at the end of
