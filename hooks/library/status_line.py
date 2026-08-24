@@ -28,8 +28,9 @@ Features:
   in a warning color and bold
 - Claude session line stats: lines added and removed, individually colored
 - Context usage display: percent of the model context window used,
-  threshold-colored (ok/warn/crit) as the auto-compaction point approaches,
-  with optional token counts
+  threshold-colored (ok/warn/crit), with optional token counts; the context
+  block's thresholds and colors are the single source shared with the
+  /compact reminder, so both surfaces escalate together
 - Reasoning effort display: the current effort level (low/medium/high/xhigh/max)
   with per-level colors; hidden for models without effort support
 - Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
@@ -37,8 +38,9 @@ Features:
 - Configurable suffix: optional custom text at end of status line
 - Notifications row (disabled by default): an optional second output row for
   notification segments; currently carries the /compact reminder, which
-  appears when context-window usage reaches a configurable threshold and
-  escalates its styling at a second threshold
+  appears when context-window usage reaches the context block's warn
+  threshold and escalates its styling at the crit threshold, while staying
+  independently disableable via its own 'enabled' flag
 
 The 'order' list controls sequence only and applies to the first row. Block
 visibility is controlled exclusively by each block's 'enabled' flag and by
@@ -161,12 +163,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'context': {
         'enabled': True,
         'label': 'ctx:',
-        # Percent-used thresholds. The percentage is measured against the
-        # full model context window; auto-compaction triggers before the
-        # window is exhausted, so crit_threshold approximates "compaction
-        # imminent" rather than "window full".
-        'warn_threshold': 70,
-        'crit_threshold': 90,
+        # Percent-used thresholds, measured against the full model context
+        # window. They mark where a manual /compact becomes advisable (warn)
+        # and urgent (crit), well before auto-compaction exhausts the window.
+        # These thresholds and the three colors below are the single source
+        # for every context-usage surface: the ctx segment here and the
+        # /compact reminder under 'notifications' both read them, so the two
+        # escalate in lockstep. The 'enabled' flag above governs only this
+        # segment, never the reminder.
+        'warn_threshold': 45,
+        'crit_threshold': 65,
         'ok_color': 'green',
         'warn_color': 'yellow',
         'crit_color': 'red',
@@ -226,17 +232,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Separator between notification segments when several are active.
         'separator': ' | ',
         'compact_reminder': {
+            # This flag disables the reminder alone; thresholds and colors
+            # are NOT configured here -- the reminder appears at the
+            # 'context' block's warn_threshold (warn_color styling) and
+            # escalates at its crit_threshold (crit_color styling), so the
+            # reminder and the ctx segment always agree.
             'enabled': True,
-            # Context-window usage percent at which the reminder appears
-            # (warn styling) and at which it escalates (crit styling).
-            'threshold_percent': 45,
-            'crit_threshold_percent': 60,
             # {percent} in either template is replaced with the integer
             # usage percent.
             'message': 'ctx {percent}% - consider /compact',
             'crit_message': 'ctx {percent}% - run /compact now',
-            'warn_color': 'yellow',
-            'crit_color': 'red',
             'bold': False,
         },
     },
@@ -565,6 +570,46 @@ def _context_used_percent(data: dict[str, Any]) -> float | None:
     return max(0.0, min(100.0, pct))
 
 
+def _resolve_context_severity(pct: float, config: dict[str, Any]) -> tuple[str, object, str]:
+    """Classify a context-usage percentage against the shared context thresholds.
+
+    The `context` config block's `warn_threshold`, `crit_threshold`, and
+    ok/warn/crit colors are the single source for every context-usage surface
+    -- the ctx segment and the /compact reminder both resolve through this
+    function -- so the two can never drift apart however the block is
+    configured. Only thresholds and colors are read here; each surface keeps
+    its own visibility switches.
+
+    The thresholds mark where a manual /compact becomes advisable (warn) and
+    urgent (crit), well before auto-compaction exhausts the window. A
+    non-numeric configured threshold falls back to the packaged default.
+
+    Args:
+        pct: Context-window usage percentage, clamped to 0-100.
+        config: Configuration dictionary; thresholds and colors are read from
+            its `context` sub-dict.
+
+    Returns:
+        A (severity, color_value, default_color_name) tuple, where severity is
+        'ok' (below warn_threshold), 'warn' (at or above warn_threshold), or
+        'crit' (at or above crit_threshold), color_value is the configured
+        color for that severity, and default_color_name is its fallback.
+    """
+    context_config = _as_dict(config.get('context'), DEFAULT_CONFIG['context'])
+    warn = context_config.get('warn_threshold')
+    crit = context_config.get('crit_threshold')
+    if not isinstance(warn, (int, float)):
+        warn = DEFAULT_CONFIG['context']['warn_threshold']
+    if not isinstance(crit, (int, float)):
+        crit = DEFAULT_CONFIG['context']['crit_threshold']
+
+    if pct >= crit:
+        return 'crit', context_config.get('crit_color'), 'red'
+    if pct >= warn:
+        return 'warn', context_config.get('warn_color'), 'yellow'
+    return 'ok', context_config.get('ok_color'), 'green'
+
+
 def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
     """
     Format the context-window usage as a compact colored statusline segment.
@@ -573,11 +618,12 @@ def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | N
     percentage of the model context window in use comes from
     `used_percentage` when it is numeric, or is computed from
     `total_input_tokens` / `context_window_size` otherwise. The percentage is
-    clamped to 0-100 and colored by the configured thresholds (ok below
+    clamped to 0-100 and colored by the shared context thresholds (ok below
     warn_threshold, warn at warn_threshold or above, crit at crit_threshold
-    or above). The percentage is measured against the full model context
-    window; auto-compaction triggers before the window is exhausted, so the
-    crit threshold approximates "compaction imminent".
+    or above); the same thresholds and colors drive the /compact reminder, so
+    the segment and the reminder escalate together. The thresholds mark where
+    a manual /compact becomes advisable (warn) and urgent (crit), well before
+    auto-compaction exhausts the window.
 
     When `show_tokens` is enabled and the token fields are numeric, appends
     " (Nk/Mk)" with used and total tokens rounded to thousands (a 1M-token
@@ -616,19 +662,7 @@ def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | N
     if pct is None:
         return None
 
-    warn = context_config.get('warn_threshold', 70)
-    crit = context_config.get('crit_threshold', 90)
-    if not isinstance(warn, (int, float)):
-        warn = 70
-    if not isinstance(crit, (int, float)):
-        crit = 90
-
-    if pct >= crit:
-        color_value, default_name = context_config.get('crit_color'), 'red'
-    elif pct >= warn:
-        color_value, default_name = context_config.get('warn_color'), 'yellow'
-    else:
-        color_value, default_name = context_config.get('ok_color'), 'green'
+    _severity, color_value, default_name = _resolve_context_severity(pct, config)
 
     label = context_config.get('label', 'ctx:')
     if not isinstance(label, str):
@@ -841,22 +875,26 @@ def get_compact_reminder_display(data: dict[str, Any], config: dict[str, Any]) -
     context-window usage percentage from the statusline payload (via
     `used_percentage`, falling back to `total_input_tokens` /
     `context_window_size`) and renders the configured message once usage
-    reaches `threshold_percent` (warn styling), switching to the crit message
-    and styling at `crit_threshold_percent`. The `{percent}` placeholder in
+    reaches the `context` block's `warn_threshold` (warn_color styling),
+    switching to the crit message at its `crit_threshold` (crit_color
+    styling). Thresholds and colors come exclusively from the `context` block
+    -- the single source shared with the ctx segment -- while this block
+    keeps its own `enabled` switch and message templates, so the reminder can
+    be turned off without touching the segment (and the segment's `enabled`
+    flag never suppresses the reminder). The `{percent}` placeholder in
     either message template is replaced with the integer usage percent.
 
     Returns None when:
         - The compact_reminder feature is disabled.
         - No usage percentage is available from the payload.
-        - Usage is below threshold_percent.
+        - Usage is below the context block's warn_threshold.
 
     Args:
         data: Statusline input JSON (as a dict).
         config: Configuration dictionary; expects a `notifications` sub-dict
             with a `compact_reminder` sub-dict carrying `enabled` (bool),
-            `threshold_percent` (number), `crit_threshold_percent` (number),
-            `message` (str), `crit_message` (str), `warn_color`, `crit_color`,
-            and `bold`.
+            `message` (str), `crit_message` (str), and `bold`, plus the
+            `context` sub-dict supplying the shared thresholds and colors.
 
     Returns:
         Colored notification segment string, or None when suppressed.
@@ -873,24 +911,16 @@ def get_compact_reminder_display(data: dict[str, Any], config: dict[str, Any]) -
     if pct is None:
         return None
 
-    threshold = reminder_config.get('threshold_percent', 45)
-    crit = reminder_config.get('crit_threshold_percent', 60)
-    if not isinstance(threshold, (int, float)):
-        threshold = 45
-    if not isinstance(crit, (int, float)):
-        crit = 60
-
-    if pct < threshold:
+    severity, color_value, default_name = _resolve_context_severity(pct, config)
+    if severity == 'ok':
         return None
 
-    if pct >= crit:
+    if severity == 'crit':
         template = reminder_config.get('crit_message')
         fallback_template = 'ctx {percent}% - run /compact now'
-        color_value, default_name = reminder_config.get('crit_color'), 'red'
     else:
         template = reminder_config.get('message')
         fallback_template = 'ctx {percent}% - consider /compact'
-        color_value, default_name = reminder_config.get('warn_color'), 'yellow'
     if not isinstance(template, str) or not template:
         template = fallback_template
 
