@@ -96,6 +96,7 @@ skills:
     base: https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/skills/library/serena-tool-selection
     files:
       - SKILL.md
+      - known-limitations.md
 
 # MCP server registration. scope: user registers the server in ~/.claude.json
 # for all projects. The command starts Serena from the current upstream main
