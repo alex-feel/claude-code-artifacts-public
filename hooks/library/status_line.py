@@ -28,9 +28,10 @@ Features:
   in a warning color and bold
 - Claude session line stats: lines added and removed, individually colored
 - Context usage display: percent of the model context window used,
-  threshold-colored (ok/warn/crit), with optional token counts; the context
-  block's thresholds and colors are the single source shared with the
-  /compact reminder, so both surfaces escalate together
+  threshold-colored (ok/warn/crit), with optional token counts; the
+  thresholds are tiered by context-window size, and the context block's
+  thresholds and colors are the single source shared with the /compact
+  reminder and the context snapshot, so every surface escalates together
 - Reasoning effort display: the current effort level (low/medium/high/xhigh/max)
   with per-level colors; hidden for models without effort support
 - Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
@@ -41,6 +42,10 @@ Features:
   appears when context-window usage reaches the context block's warn
   threshold and escalates its styling at the crit threshold, while staying
   independently disableable via its own 'enabled' flag
+- Context snapshot (disabled by default): records the session's context usage
+  and resolved severity in a per-session JSON file on every run, so tools that
+  never see the status-line payload (hook events carry no usage figures) can
+  act on exactly what the status line shows
 
 The 'order' list controls sequence only and applies to the first row. Block
 visibility is controlled exclusively by each block's 'enabled' flag and by
@@ -51,11 +56,17 @@ exists, and the block is enabled).
 Configuration is loaded from external YAML file when provided.
 """
 
+import contextlib
 import importlib.util
 import json
+import os
+import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -166,11 +177,39 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Percent-used thresholds, measured against the full model context
         # window. They mark where a manual /compact becomes advisable (warn)
         # and urgent (crit), well before auto-compaction exhausts the window.
+        # Long-context evaluations show recall declining as the number of
+        # tokens in context grows, and the same percentage of a large window
+        # holds far more tokens than of a small one, so the thresholds are
+        # tiered by window size. The packaged tier values are a judgment from
+        # published long-context evaluations, not a measured optimum for any
+        # particular model.
+        #
+        # Threshold resolution (explicit configuration always wins over the
+        # packaged defaults):
+        #   1. The tier list: thresholds_by_window as configured; when the
+        #      config block has no list under that key, no tiers if the block
+        #      sets its own numeric warn_threshold or crit_threshold (a
+        #      uniform pair for every window), and the packaged tiers below
+        #      otherwise. An empty list disables tiering.
+        #   2. Among the listed entries whose min_window is at or below the
+        #      payload's context_window_size, the one with the largest
+        #      min_window applies, wherever it sits in the list. An entry
+        #      missing a numeric min_window, warn_threshold, or
+        #      crit_threshold is ignored.
+        #   3. When no tier applies (no tiers, no window size in the payload,
+        #      or no entry's min_window low enough), the flat warn_threshold /
+        #      crit_threshold pair applies, each value falling back to its
+        #      packaged default below when not numeric.
         # These thresholds and the three colors below are the single source
-        # for every context-usage surface: the ctx segment here and the
-        # /compact reminder under 'notifications' both read them, so the two
-        # escalate in lockstep. The 'enabled' flag above governs only this
-        # segment, never the reminder.
+        # for every context-usage surface: the ctx segment here, the /compact
+        # reminder under 'notifications', and the severity recorded by
+        # 'context_snapshot' all resolve through them, so they escalate in
+        # lockstep. The 'enabled' flag above governs only this segment, never
+        # the reminder or the snapshot.
+        'thresholds_by_window': [
+            {'min_window': 500000, 'warn_threshold': 35, 'crit_threshold': 50},
+            {'min_window': 0, 'warn_threshold': 60, 'crit_threshold': 75},
+        ],
         'warn_threshold': 45,
         'crit_threshold': 65,
         'ok_color': 'green',
@@ -233,10 +272,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'separator': ' | ',
         'compact_reminder': {
             # This flag disables the reminder alone; thresholds and colors
-            # are NOT configured here -- the reminder appears at the
-            # 'context' block's warn_threshold (warn_color styling) and
-            # escalates at its crit_threshold (crit_color styling), so the
-            # reminder and the ctx segment always agree.
+            # are NOT configured here -- the reminder appears at the warn
+            # threshold the 'context' block resolves for the session's window
+            # (warn_color styling) and escalates at its crit threshold
+            # (crit_color styling), so the reminder and the ctx segment always
+            # agree.
             'enabled': True,
             # {percent} in either template is replaced with the integer
             # usage percent.
@@ -244,6 +284,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
             'crit_message': 'ctx {percent}% - run /compact now',
             'bold': False,
         },
+    },
+    'context_snapshot': {
+        # Off by default. When enabled, every run records the session's
+        # context usage in <dir>/<session_id>.json, so tools that never see
+        # the status-line payload (hook events carry no usage figures) can act
+        # on exactly what the status line shows. The record holds the used
+        # percentage, the window size, the model id, the severity (ok, warn,
+        # or crit) resolved through the 'context' block's thresholds, those
+        # effective thresholds, and a UTC timestamp. Before the first response
+        # and right after /compact the payload carries no usage, and the
+        # record then stores null for both the percentage and the severity,
+        # so a pre-compaction reading never lingers. Each write replaces the
+        # file atomically, so a reader never sees a partial record.
+        'enabled': False,
+        # Directory for the snapshot files; '~' and environment variables are
+        # expanded. Empty or omitted selects <config dir>/state/context-usage,
+        # where the config dir is $CLAUDE_CONFIG_DIR when set and ~/.claude
+        # otherwise. Point it at a directory dedicated to these files.
+        'dir': '',
+        # When a session writes its first snapshot, files in the directory
+        # left unmodified for this many days are deleted. Only files whose
+        # names start with a UUID session id and end in .json or .tmp are
+        # ever touched. Omitting the key keeps this default; a value that is
+        # not a positive number disables pruning.
+        'retention_days': 7,
     },
 }
 
@@ -269,6 +334,19 @@ COLOR_MAP: dict[str, str] = {
     'bright_cyan': Colors.BRIGHT_CYAN,
     'bright_white': Colors.BRIGHT_WHITE,
 }
+
+# A session id is used verbatim as a snapshot filename, so only ids made of
+# filename-safe characters (no separators, no dots) are recorded.
+_SESSION_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+
+# Files the snapshot pruner may delete: names starting with a UUID session id
+# and ending in .json or .tmp, such as '<id>.json' or '<id>.json.<pid>.tmp'.
+# Anything else in the directory is left alone.
+_PRUNABLE_NAME_RE = re.compile(
+    r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}(?:\.[A-Za-z0-9_-]+)*\.(?:json|tmp)',
+)
+
+_SECONDS_PER_DAY = 86400
 
 
 def _as_dict(value: object, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -570,42 +648,157 @@ def _context_used_percent(data: dict[str, Any]) -> float | None:
     return max(0.0, min(100.0, pct))
 
 
-def _resolve_context_severity(pct: float, config: dict[str, Any]) -> tuple[str, object, str]:
-    """Classify a context-usage percentage against the shared context thresholds.
+def _as_number(value: object) -> float | None:
+    """Return value as a float when it is an int or float, excluding bool.
 
-    The `context` config block's `warn_threshold`, `crit_threshold`, and
-    ok/warn/crit colors are the single source for every context-usage surface
-    -- the ctx segment and the /compact reminder both resolve through this
-    function -- so the two can never drift apart however the block is
-    configured. Only thresholds and colors are read here; each surface keeps
-    its own visibility switches.
+    YAML parses `true` as a bool, and bool is an int subclass in Python, so a
+    plain isinstance check would accept it as the number 1.
 
-    The thresholds mark where a manual /compact becomes advisable (warn) and
-    urgent (crit), well before auto-compaction exhausts the window. A
-    non-numeric configured threshold falls back to the packaged default.
+    Args:
+        value: The candidate value, of unknown type.
+
+    Returns:
+        The value as a float for a non-bool int or float, otherwise None.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _context_window_size(data: dict[str, Any]) -> float | None:
+    """Extract the model context-window size in tokens from the statusline payload.
+
+    Args:
+        data: Statusline input JSON (as a dict).
+
+    Returns:
+        The positive `context_window.context_window_size` value, or None when
+        the payload carries no usable window size.
+    """
+    context_window = data.get('context_window')
+    if not isinstance(context_window, dict):
+        return None
+    window_size = _as_number(cast('dict[str, Any]', context_window).get('context_window_size'))
+    if window_size is None or window_size <= 0:
+        return None
+    return window_size
+
+
+def _resolve_context_thresholds(window_size: float | None, config: dict[str, Any]) -> tuple[float, float]:
+    """Resolve the warn and crit percentages that apply to a context window.
+
+    Among the `context` block's `thresholds_by_window` entries whose
+    `min_window` is at or below window_size, the one with the largest
+    `min_window` supplies both thresholds, regardless of list order; an entry
+    missing a numeric `min_window`, `warn_threshold`, or `crit_threshold` is
+    ignored. A block without a list under that key gets no tiers when it sets
+    its own numeric `warn_threshold` or `crit_threshold` (an explicit uniform
+    pair wins over the packaged tiers) and the packaged tiers otherwise; an
+    empty list disables tiering. When no tier applies (no tiers, window_size
+    is None, or no entry's `min_window` is low enough), the block's flat
+    `warn_threshold` and `crit_threshold` apply, each falling back to its
+    packaged default when not numeric.
+
+    Args:
+        window_size: The session's context-window size in tokens, or None
+            when unknown.
+        config: Configuration dictionary; thresholds are read from its
+            `context` sub-dict.
+
+    Returns:
+        A (warn_threshold, crit_threshold) tuple of percentages.
+    """
+    default_context = DEFAULT_CONFIG['context']
+    context_config = _as_dict(config.get('context'), default_context)
+    warn = _as_number(context_config.get('warn_threshold'))
+    crit = _as_number(context_config.get('crit_threshold'))
+
+    configured_tiers = context_config.get('thresholds_by_window')
+    if isinstance(configured_tiers, list):
+        tiers = cast('list[object]', configured_tiers)
+    elif warn is not None or crit is not None:
+        tiers = []
+    else:
+        tiers = cast('list[object]', default_context['thresholds_by_window'])
+
+    if window_size is not None:
+        best: tuple[float, float, float] | None = None
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            tier_dict = cast('dict[str, Any]', tier)
+            min_window = _as_number(tier_dict.get('min_window'))
+            tier_warn = _as_number(tier_dict.get('warn_threshold'))
+            tier_crit = _as_number(tier_dict.get('crit_threshold'))
+            if min_window is None or tier_warn is None or tier_crit is None:
+                continue
+            if min_window <= window_size and (best is None or min_window > best[0]):
+                best = (min_window, tier_warn, tier_crit)
+        if best is not None:
+            return best[1], best[2]
+
+    if warn is None:
+        warn = float(default_context['warn_threshold'])
+    if crit is None:
+        crit = float(default_context['crit_threshold'])
+    return warn, crit
+
+
+def _classify_context_severity(pct: float, warn: float, crit: float) -> str:
+    """Classify a context-usage percentage against a warn/crit threshold pair.
 
     Args:
         pct: Context-window usage percentage, clamped to 0-100.
+        warn: Percentage from which usage counts as 'warn'.
+        crit: Percentage from which usage counts as 'crit'.
+
+    Returns:
+        'crit' at or above crit, 'warn' at or above warn, 'ok' otherwise.
+    """
+    if pct >= crit:
+        return 'crit'
+    if pct >= warn:
+        return 'warn'
+    return 'ok'
+
+
+def _resolve_context_severity(
+    pct: float,
+    window_size: float | None,
+    config: dict[str, Any],
+) -> tuple[str, object, str]:
+    """Classify a context-usage percentage against the shared context thresholds.
+
+    The `context` config block's thresholds (resolved for the session's window
+    size by _resolve_context_thresholds) and its ok/warn/crit colors are the
+    single source for every context-usage surface -- the ctx segment, the
+    /compact reminder, and the context snapshot all resolve through them -- so
+    the surfaces can never drift apart however the block is configured. Only
+    thresholds and colors are read here; each surface keeps its own visibility
+    switches.
+
+    The thresholds mark where a manual /compact becomes advisable (warn) and
+    urgent (crit), well before auto-compaction exhausts the window.
+
+    Args:
+        pct: Context-window usage percentage, clamped to 0-100.
+        window_size: The session's context-window size in tokens, or None
+            when unknown.
         config: Configuration dictionary; thresholds and colors are read from
             its `context` sub-dict.
 
     Returns:
         A (severity, color_value, default_color_name) tuple, where severity is
-        'ok' (below warn_threshold), 'warn' (at or above warn_threshold), or
-        'crit' (at or above crit_threshold), color_value is the configured
-        color for that severity, and default_color_name is its fallback.
+        'ok' (below the warn threshold), 'warn' (at or above it), or 'crit'
+        (at or above the crit threshold), color_value is the configured color
+        for that severity, and default_color_name is its fallback.
     """
     context_config = _as_dict(config.get('context'), DEFAULT_CONFIG['context'])
-    warn = context_config.get('warn_threshold')
-    crit = context_config.get('crit_threshold')
-    if not isinstance(warn, (int, float)):
-        warn = DEFAULT_CONFIG['context']['warn_threshold']
-    if not isinstance(crit, (int, float)):
-        crit = DEFAULT_CONFIG['context']['crit_threshold']
-
-    if pct >= crit:
+    warn, crit = _resolve_context_thresholds(window_size, config)
+    severity = _classify_context_severity(pct, warn, crit)
+    if severity == 'crit':
         return 'crit', context_config.get('crit_color'), 'red'
-    if pct >= warn:
+    if severity == 'warn':
         return 'warn', context_config.get('warn_color'), 'yellow'
     return 'ok', context_config.get('ok_color'), 'green'
 
@@ -618,12 +811,13 @@ def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | N
     percentage of the model context window in use comes from
     `used_percentage` when it is numeric, or is computed from
     `total_input_tokens` / `context_window_size` otherwise. The percentage is
-    clamped to 0-100 and colored by the shared context thresholds (ok below
-    warn_threshold, warn at warn_threshold or above, crit at crit_threshold
-    or above); the same thresholds and colors drive the /compact reminder, so
-    the segment and the reminder escalate together. The thresholds mark where
-    a manual /compact becomes advisable (warn) and urgent (crit), well before
-    auto-compaction exhausts the window.
+    clamped to 0-100 and colored by the shared context thresholds resolved for
+    the payload's window size (ok below the warn threshold, warn at it or
+    above, crit at the crit threshold or above); the same thresholds and
+    colors drive the /compact reminder, so the segment and the reminder
+    escalate together. The thresholds mark where a manual /compact becomes
+    advisable (warn) and urgent (crit), well before auto-compaction exhausts
+    the window.
 
     When `show_tokens` is enabled and the token fields are numeric, appends
     " (Nk/Mk)" with used and total tokens rounded to thousands (a 1M-token
@@ -639,9 +833,9 @@ def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | N
     Args:
         data: Statusline input JSON (as a dict).
         config: Configuration dictionary; expects a `context` sub-dict with
-            `enabled` (bool), `label` (str), `warn_threshold` (int),
-            `crit_threshold` (int), `ok_color`, `warn_color`, `crit_color`,
-            `show_tokens` (bool), and `bold`.
+            `enabled` (bool), `label` (str), `thresholds_by_window` (list),
+            `warn_threshold` (int), `crit_threshold` (int), `ok_color`,
+            `warn_color`, `crit_color`, `show_tokens` (bool), and `bold`.
 
     Returns:
         Colored compact segment string, or None when display is suppressed.
@@ -662,7 +856,7 @@ def get_context_display(data: dict[str, Any], config: dict[str, Any]) -> str | N
     if pct is None:
         return None
 
-    _severity, color_value, default_name = _resolve_context_severity(pct, config)
+    _severity, color_value, default_name = _resolve_context_severity(pct, _context_window_size(data), config)
 
     label = context_config.get('label', 'ctx:')
     if not isinstance(label, str):
@@ -875,10 +1069,11 @@ def get_compact_reminder_display(data: dict[str, Any], config: dict[str, Any]) -
     context-window usage percentage from the statusline payload (via
     `used_percentage`, falling back to `total_input_tokens` /
     `context_window_size`) and renders the configured message once usage
-    reaches the `context` block's `warn_threshold` (warn_color styling),
-    switching to the crit message at its `crit_threshold` (crit_color
-    styling). Thresholds and colors come exclusively from the `context` block
-    -- the single source shared with the ctx segment -- while this block
+    reaches the warn threshold the `context` block resolves for the payload's
+    window size (warn_color styling), switching to the crit message at its
+    crit threshold (crit_color styling). Thresholds and colors come
+    exclusively from the `context` block -- the single source shared with the
+    ctx segment -- while this block
     keeps its own `enabled` switch and message templates, so the reminder can
     be turned off without touching the segment (and the segment's `enabled`
     flag never suppresses the reminder). The `{percent}` placeholder in
@@ -887,7 +1082,7 @@ def get_compact_reminder_display(data: dict[str, Any], config: dict[str, Any]) -
     Returns None when:
         - The compact_reminder feature is disabled.
         - No usage percentage is available from the payload.
-        - Usage is below the context block's warn_threshold.
+        - Usage is below the warn threshold resolved for the window.
 
     Args:
         data: Statusline input JSON (as a dict).
@@ -911,7 +1106,7 @@ def get_compact_reminder_display(data: dict[str, Any], config: dict[str, Any]) -
     if pct is None:
         return None
 
-    severity, color_value, default_name = _resolve_context_severity(pct, config)
+    severity, color_value, default_name = _resolve_context_severity(pct, _context_window_size(data), config)
     if severity == 'ok':
         return None
 
@@ -964,6 +1159,135 @@ def get_notifications_display(data: dict[str, Any], config: dict[str, Any]) -> s
     if not isinstance(separator, str):
         separator = ' | '
     return separator.join(segments)
+
+
+def resolve_snapshot_directory(configured: object) -> Path:
+    """Resolve the directory that holds the per-session context snapshots.
+
+    Args:
+        configured: The `context_snapshot.dir` config value. A non-empty
+            string is used as the directory after expanding environment
+            variables and '~'; anything else selects the default.
+
+    Returns:
+        The configured directory, or <config dir>/state/context-usage, where
+        the config dir is $CLAUDE_CONFIG_DIR when set and non-empty, and
+        ~/.claude otherwise.
+    """
+    if isinstance(configured, str) and configured.strip():
+        return Path(os.path.expandvars(configured.strip())).expanduser()
+    config_dir = os.environ.get('CLAUDE_CONFIG_DIR', '').strip()
+    root = Path(config_dir).expanduser() if config_dir else Path.home() / '.claude'
+    return root / 'state' / 'context-usage'
+
+
+def _prune_snapshots(directory: Path, retention_days: object) -> None:
+    """Delete snapshot-directory files left unmodified for retention_days days.
+
+    Only names matching _PRUNABLE_NAME_RE are considered, so a directory
+    shared with unrelated files never loses them. Every filesystem error is
+    ignored: pruning is housekeeping and must never disturb the status line.
+
+    Args:
+        directory: The snapshot directory.
+        retention_days: Age limit in days; a non-numeric, zero, or negative
+            value disables pruning.
+    """
+    days = _as_number(retention_days)
+    if days is None or days <= 0:
+        return
+    cutoff = time.time() - days * _SECONDS_PER_DAY
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not _PRUNABLE_NAME_RE.fullmatch(entry.name):
+            continue
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            continue
+
+
+def write_context_snapshot(data: dict[str, Any], config: dict[str, Any]) -> Path | None:
+    """Record the session's context usage in its per-session snapshot file.
+
+    Writes <dir>/<session_id>.json with the used percentage, window size,
+    model id, severity, and effective thresholds, all resolved through the
+    same functions the ctx segment uses, plus a UTC timestamp. When the
+    payload carries no usage (before the first response, and right after
+    /compact until the next one), the percentage and severity are recorded as
+    null, so a reading from before the compaction never lingers. The file is
+    replaced atomically (a temporary sibling renamed over it), so a reader
+    sees either the previous record or the new one, never a partial write.
+    Writing a session's first snapshot also prunes stale files.
+
+    A filesystem error, or a home directory that cannot be determined, skips
+    the write silently: the next status-line run writes a fresh snapshot, and
+    the status line itself must never fail because of it.
+
+    Args:
+        data: Statusline input JSON (as a dict), expected to carry a
+            `session_id`, a `context_window` object, and a `model` object.
+        config: Configuration dictionary; expects a `context_snapshot`
+            sub-dict with `enabled` (bool), `dir` (str), and `retention_days`
+            (number; the packaged default applies when the key is omitted),
+            plus the `context` sub-dict supplying the thresholds.
+
+    Returns:
+        The snapshot path when a snapshot was written, otherwise None (the
+        feature is disabled, the session id is missing or not filename-safe,
+        or the write failed).
+    """
+    snapshot_config = _as_dict(config.get('context_snapshot'), DEFAULT_CONFIG['context_snapshot'])
+    if snapshot_config.get('enabled') is not True:
+        return None
+
+    session_id = data.get('session_id')
+    if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
+        return None
+
+    pct = _context_used_percent(data)
+    window_size = _context_window_size(data)
+    warn, crit = _resolve_context_thresholds(window_size, config)
+    model = _as_dict(data.get('model'), {})
+    model_id = model.get('id')
+
+    record: dict[str, object] = {
+        'schema': 1,
+        'session_id': session_id,
+        'model_id': model_id if isinstance(model_id, str) and model_id else None,
+        'context_window_size': int(window_size) if window_size is not None else None,
+        'used_percentage': pct,
+        'severity': _classify_context_severity(pct, warn, crit) if pct is not None else None,
+        'warn_threshold': warn,
+        'crit_threshold': crit,
+        'written_at': datetime.now(UTC).isoformat(timespec='seconds'),
+    }
+
+    temp_path: Path | None = None
+    try:
+        # Resolving the default directory needs the home directory, which
+        # raises RuntimeError when it cannot be determined.
+        directory = resolve_snapshot_directory(snapshot_config.get('dir'))
+        path = directory / f'{session_id}.json'
+        first_write = not path.exists()
+        directory.mkdir(parents=True, exist_ok=True)
+        temp_path = directory / f'{session_id}.json.{os.getpid()}.tmp'
+        temp_path.write_text(json.dumps(record), encoding='utf-8')
+        os.replace(temp_path, path)
+    except (OSError, RuntimeError):
+        if temp_path is not None:
+            with contextlib.suppress(OSError):
+                temp_path.unlink(missing_ok=True)
+        return None
+
+    if first_write:
+        retention_days = snapshot_config.get('retention_days', DEFAULT_CONFIG['context_snapshot']['retention_days'])
+        _prune_snapshots(directory, retention_days)
+    return path
 
 
 def get_git_branch(cwd: str) -> str:
@@ -1087,6 +1411,11 @@ def main() -> None:
     notifications_row = get_notifications_display(payload, config)
     if notifications_row is not None:
         print(notifications_row)
+
+    # The snapshot comes after the display, so recording it never delays or
+    # disturbs what the user sees.
+    sys.stdout.flush()
+    write_context_snapshot(payload, config)
 
 
 if __name__ == '__main__':
