@@ -1,8 +1,9 @@
-# Claude Code Artifacts
-
-<p align="center">
-  <img src=".github/images/banner.png" alt="A public library of reusable Claude Code artifacts — skills, hooks, rules, environment configurations, agents, and slash commands — ready to drop into any Claude Code setup." width="100%">
-</p>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/images/banner-dark.svg">
+    <img alt="Claude Code Artifacts" src=".github/images/banner.svg" width="617">
+  </picture>
+</h1>
 
 [![License: MIT](https://img.shields.io/github/license/alex-feel/claude-code-artifacts-public)](LICENSE) [![Validate Configs](https://github.com/alex-feel/claude-code-artifacts-public/actions/workflows/validate-configs.yml/badge.svg)](https://github.com/alex-feel/claude-code-artifacts-public/actions/workflows/validate-configs.yml) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/claude-code-artifacts-public)
 
