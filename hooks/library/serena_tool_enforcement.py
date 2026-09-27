@@ -10,11 +10,22 @@ This hook is the fast, deterministic first tier of Serena tool steering, and it
 is NON-BLOCKING: it never denies a search. For Search/Grep calls it:
 - stays silent when the search is scoped, by path or glob, to non-code file
   types only (every extension the scope determines is outside code_extensions);
-- for code files whose pattern contains a symbol-definition keyword (def, class,
-  function, etc.), ALLOWS the search and injects a one-time additionalContext
-  nudge toward the semantic Serena tools;
-- stays silent (no nudge) for every other pattern, which preserves the
-  bare-symbol cross-validation grep that reference-completeness checks rely on.
+- stays silent (no nudge) for every pattern without a symbol-definition
+  keyword, which preserves the bare-symbol cross-validation grep that
+  reference-completeness checks rely on;
+- stays silent when the search scope lies outside the project Serena serves,
+  because Serena resolves symbols only inside its own project;
+- otherwise ALLOWS the search and injects a one-time additionalContext nudge
+  toward the semantic Serena tools.
+
+Serena's project is found the way Serena's --project-from-cwd option finds it:
+the nearest directory at or above the session start directory (the
+CLAUDE_PROJECT_DIR the session was launched in, else the session cwd) that
+holds .serena/project.yml or .git. When no such directory exists, Serena
+activates no project, so no search scope is inside its reach. A search scope
+belongs to the project when it lies under the project root and no nested
+project boundary (a nested git checkout such as a git worktree, or a nested
+.serena/project.yml) sits between the root and the scope.
 
 It never blocks, because a hard deny would also block that legitimate
 cross-validation grep and would strand the agent when Serena is unavailable or
@@ -26,7 +37,7 @@ Event: PreToolUse
 Matcher: Search|Grep
 Target: Search and Grep tool operations
 Action: Inject an advisory Serena nudge for symbol-keyword searches in code
-        files; otherwise allow silently. Never blocks.
+        files inside Serena's project; otherwise allow silently. Never blocks.
 
 Exit Codes:
 - 0: In all cases (advisory injection is non-blocking).
@@ -41,6 +52,7 @@ fixed.
 
 import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -122,9 +134,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             'search misses:'
         ),
         'tools': [
-            'find_symbol(name, include_body=True) - locate a definition',
-            'find_referencing_symbols(name, path) - locate usages',
-            'get_symbols_overview(path) - outline a file structure',
+            "find_symbol(name_path_pattern='NAME', include_body=True) - locate a definition",
+            (
+                "find_referencing_symbols(name_path='NAME', relative_path='<project-relative file defining NAME>') "
+                '- locate usages'
+            ),
+            "get_symbols_overview(relative_path='<project-relative file>') - outline a file structure",
         ],
         'footer': (
             'Prefer the Serena tool when it is available. If Serena is '
@@ -135,6 +150,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'pattern_label': 'Pattern: {pattern}',
     },
 }
+
+# Entries whose presence makes a directory a project root for Serena's
+# --project-from-cwd detection: an explicit Serena project file, or a git root
+# (.git is a directory in a clone and a pointer file in a worktree or submodule).
+PROJECT_MARKERS: tuple[str, ...] = ('.serena/project.yml', '.git')
 
 
 def get_file_extension(file_path: str) -> str | None:
@@ -251,6 +271,95 @@ def find_blocked_keyword(pattern: str, config: dict[str, Any]) -> str | None:
     return None
 
 
+def is_project_boundary(directory: Path) -> bool:
+    """
+    Report whether a directory is a project root for Serena's project detection.
+
+    Args:
+        directory: The directory to inspect.
+
+    Returns:
+        True when the directory holds any of the PROJECT_MARKERS entries.
+    """
+    return any((directory / marker).exists() for marker in PROJECT_MARKERS)
+
+
+def find_project_root(start: Path) -> Path | None:
+    """
+    Find the project root Serena detects for a start directory.
+
+    Args:
+        start: The resolved directory the search for a project root begins at.
+
+    Returns:
+        The nearest directory at or above ``start`` that is a project boundary,
+        or None when no such directory exists, in which case Serena activates
+        no project.
+    """
+    for directory in (start, *start.parents):
+        if is_project_boundary(directory):
+            return directory
+    return None
+
+
+def is_within_project(scope: Path, project_root: Path) -> bool:
+    """
+    Report whether a search scope belongs to the project rooted at ``project_root``.
+
+    A scope belongs to the project when it lies under the root and no nested
+    project boundary (for example a git worktree or submodule checkout below the
+    root) sits between the root and the scope; a nested boundary starts a
+    different project that Serena does not serve.
+
+    Args:
+        scope: The resolved file or directory the search targets.
+        project_root: The resolved root of the project Serena serves.
+
+    Returns:
+        True when Serena can resolve symbols in the scope, False otherwise.
+    """
+    if not scope.is_relative_to(project_root):
+        return False
+    directory = project_root
+    for part in scope.relative_to(project_root).parts:
+        directory /= part
+        if is_project_boundary(directory):
+            return False
+    return True
+
+
+def search_is_within_serena_project(input_data: dict[str, Any], tool_input: dict[str, Any]) -> bool:
+    """
+    Report whether the search targets the project Serena serves in this session.
+
+    The session start directory is CLAUDE_PROJECT_DIR (the directory the session,
+    and with it the Serena MCP server, was launched in), falling back to the
+    session cwd from the hook input and then to the process working directory.
+    The search scope is the ``path`` tool-input field, resolved against the
+    session cwd when relative, or the session cwd itself when no path is given.
+
+    Args:
+        input_data: The PreToolUse hook input mapping (reads ``cwd``).
+        tool_input: The PreToolUse ``tool_input`` mapping (reads ``path``).
+
+    Returns:
+        True when the search scope belongs to Serena's project, False otherwise,
+        including when no project root exists above the session start directory.
+    """
+    raw_cwd: Any = input_data.get('cwd')
+    session_cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and raw_cwd else Path.cwd()
+    start = os.environ.get('CLAUDE_PROJECT_DIR') or str(session_cwd)
+    project_root = find_project_root(Path(start).resolve())
+    if project_root is None:
+        return False
+
+    raw_path: Any = tool_input.get('path')
+    scope = session_cwd
+    if isinstance(raw_path, str) and raw_path:
+        scope = session_cwd / Path(raw_path).expanduser()
+    return is_within_project(scope.resolve(), project_root)
+
+
 def build_nudge_message(pattern: str, keyword: str, config: dict[str, Any]) -> str:
     """
     Build the advisory nudge message from config components.
@@ -321,23 +430,7 @@ def main() -> None:
         if is_non_code_target(tool_input, config):
             sys.exit(0)
 
-        # DECISION 2: Symbol-definition keyword in a code file -> ALLOW + NUDGE.
-        # The search is NOT blocked: it runs as requested, and an advisory
-        # additionalContext nudge toward the semantic Serena tools is injected.
-        # A hard deny would also block the legitimate bare-name cross-validation
-        # grep and would strand the agent when Serena cannot help, so steering is
-        # advisory only and the text tool is always an allowed fallback.
-        keyword = find_blocked_keyword(pattern, config)
-        if keyword:
-            nudge_message = build_nudge_message(pattern, keyword, config)
-            try:
-                json_output = _load_json_output()
-                json_output.emit_additional_context('PreToolUse', nudge_message)
-            except ImportError:
-                print(nudge_message, file=sys.stderr)
-            sys.exit(0)
-
-        # DECISION 3: Allow silently with no nudge.
+        # DECISION 2: no symbol-definition keyword -> ALLOW SILENTLY.
         # Patterns without a symbol-definition keyword (for example a bare
         # function or class name) pass through here intentionally. This preserves
         # Grep cross-validation of find_referencing_symbols results, a required
@@ -346,6 +439,31 @@ def main() -> None:
         # attribute chains on runtime objects; a zero-result reply from
         # find_referencing_symbols is UNCERTAIN, not CONFIRMED-zero, so this
         # advisory tier deliberately leaves these bare-name searches alone.
+        keyword = find_blocked_keyword(pattern, config)
+        if not keyword:
+            sys.exit(0)
+
+        # DECISION 3: the search targets a scope outside the project Serena
+        # serves, or Serena serves no project at all -> ALLOW SILENTLY. Serena
+        # resolves symbols only inside its own project, so pointing the agent at
+        # it for another directory tree would only misdirect it; the text search
+        # is the right tool there.
+        if not search_is_within_serena_project(input_data, tool_input):
+            sys.exit(0)
+
+        # DECISION 4: symbol-definition keyword in a code file inside Serena's
+        # project -> ALLOW + NUDGE. The search is NOT blocked: it runs as
+        # requested, and an advisory additionalContext nudge toward the semantic
+        # Serena tools is injected. A hard deny would also block the legitimate
+        # bare-name cross-validation grep and would strand the agent when Serena
+        # cannot help, so steering is advisory only and the text tool is always
+        # an allowed fallback.
+        nudge_message = build_nudge_message(pattern, keyword, config)
+        try:
+            json_output = _load_json_output()
+            json_output.emit_additional_context('PreToolUse', nudge_message)
+        except ImportError:
+            print(nudge_message, file=sys.stderr)
         sys.exit(0)
 
     except json.JSONDecodeError:

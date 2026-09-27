@@ -42,7 +42,7 @@ The Grep cross-validation is EXEMPT from any Serena tool-enforcement hook when u
 
 ## Known Limitation: `find_implementations` for Python (LSP -32601)
 
-Serena's default Python LSP backend is Pyright, which deliberately does NOT advertise the `implementationProvider` LSP capability (Microsoft design decision; unlikely to change). Per the LSP 3.17 specification, an unsupported method correctly returns JSON-RPC error `-32601 (MethodNotFound)`. This is PROTOCOL-CORRECT behavior, NOT a Serena or deployment defect. The tool works correctly for Java, TypeScript, Go, C#, and Rust.
+Serena's default Python language server is Pyright, which deliberately does NOT advertise the `implementationProvider` LSP capability (Microsoft design decision; unlikely to change). Per the LSP 3.17 specification, an unsupported method correctly returns JSON-RPC error `-32601 (MethodNotFound)`. This is PROTOCOL-CORRECT behavior, NOT a Serena or deployment defect. The tool works correctly for Java, TypeScript, Go, C#, and Rust. Serena also offers alternative Python language servers (such as basedpyright, ty, pyrefly, and jedi) selected through its own configuration; their `find_implementations` behavior is not covered here, so verify it before relying on it.
 
 **Python workarounds:**
 
@@ -51,7 +51,7 @@ Serena's default Python LSP backend is Pyright, which deliberately does NOT adve
 
 ## Known Limitation: `get_diagnostics_for_symbol` is OPT-IN
 
-This tool is OPTIONAL in Serena upstream (inherits `ToolMarkerOptional` -- disabled by default). This deployment launches Serena with `--context lsp-only` and already opts the tool in: the in-repo source file `extras/serena/lsp-only.yml` (the canonical source-of-truth in the repository that deploys this skill) lists it in `included_optional_tools:` alongside `restart_language_server`:
+This tool is OPTIONAL in Serena upstream (inherits `ToolMarkerOptional` -- disabled by default). This deployment launches Serena with its `lsp-only` context, which already opts the tool in by listing it under `included_optional_tools` alongside `restart_language_server`:
 
 ```yaml
 included_optional_tools:
@@ -59,8 +59,8 @@ included_optional_tools:
   - get_diagnostics_for_symbol
 ```
 
-The toolbox setup propagates that source file to `~/.serena/contexts/lsp-only.yml` via the `files-to-download` mechanism, so no manual enablement step is needed.
+The environment setup installs that context as `~/.serena/contexts/lsp-only.yml`, so no manual enablement step is needed.
 
-**Note on `~/.serena/serena_config.yml`:** this is a Serena-level (not deployment-level) configuration with NO in-repo source. Under the current `--context lsp-only` mode, editing it is not required and not recommended; the in-repo `extras/serena/lsp-only.yml` is the canonical source-of-truth for the deployed `included_optional_tools` list.
+**Note on `~/.serena/serena_config.yml`:** this is Serena's global configuration, which the environment setup does not manage. Editing it is not required and not recommended for this tool: the `lsp-only` context is the single place that decides which optional tools are included.
 
-If the tool returns "tool not found" errors despite the YAML allow list including `mcp__serena__get_diagnostics_for_symbol`, the deployed copy at `~/.serena/contexts/lsp-only.yml` is stale (it predates the opt-in) -- not a YAML defect. Do NOT edit the deployed copy directly, since the toolbox setup overwrites it on the next install; re-run the toolbox setup so it re-downloads the current `extras/serena/lsp-only.yml`, then restart Claude Code (or call `mcp__serena__restart_language_server`) for the refreshed context to take effect.
+If the tool returns "tool not found" errors, the installed context at `~/.serena/contexts/lsp-only.yml` predates the opt-in -- a stale install, not a configuration defect. Do NOT edit the installed copy directly, since the next environment setup overwrites it; re-run the environment setup so it installs the current context, then restart Claude Code. Serena reads its context only when its MCP server starts, so `restart_language_server` does NOT apply a refreshed context: it restarts the language servers alone.

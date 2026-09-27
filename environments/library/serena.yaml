@@ -101,11 +101,17 @@ skills:
 # MCP server registration. scope: user registers the server in ~/.claude.json
 # for all projects. The command starts Serena from the current upstream main
 # branch, activates the lsp-only context deployed above, derives the active
-# project from the working directory, and disables the web dashboard.
+# project from the working directory, and disables the web dashboard. It also
+# selects the tools agent interface over the one in the global Serena
+# configuration, because the context's tool exclusions apply only under that
+# interface and a global REPL choice would otherwise replace the curated tool
+# set with Serena's REPL tool. A project whose own .serena/project.yml sets
+# agent_interface still gets that choice: Serena ranks the project setting
+# above the global one the flag replaces.
 mcp-servers:
   - name: serena
     scope: user
-    command: uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context lsp-only --project-from-cwd --enable-web-dashboard false
+    command: uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context lsp-only --project-from-cwd --enable-web-dashboard false --agent-interface tools
 
 # Serena tool steering hooks: two complementary tiers that keep the agent on
 # the semantic Serena tools when a plain text search would silently miss
@@ -119,7 +125,7 @@ hooks:
   events:
     # Serena tool steering - COMMAND TIER (fast, deterministic, advisory).
     # Allows the search and injects a Serena nudge for symbol-definition
-    # patterns in code files; never blocks.
+    # patterns in code files inside the project Serena serves; never blocks.
     - event: PreToolUse
       matcher: Search|Grep
       type: command
@@ -129,25 +135,34 @@ hooks:
     # Serena tool steering - AGENTIC PROMPT TIER (LLM judgment, enforcing).
     # A single-turn LLM evaluation (type: prompt) over each Search/Grep call.
     # It DENIES the search only when the call is clearly a symbol-DEFINITION
-    # lookup in a code file, returning a reason that names the exact Serena
-    # tool (find_symbol) plus a graceful-fallback note; it ALLOWS every other
-    # case, including bare-name and usage cross-validation greps,
-    # comment/string searches, and non-code files. Prompt hooks answer with
-    # flat {"ok": bool, "reason": str}; ok:true proceeds. On ok:false Claude
-    # Code denies the call and hands the agent the reason as the tool error,
-    # but prefixed by this hook's entire prompt text in square brackets with
-    # the argument placeholder left unsubstituted -- Claude Code renders the
-    # prompt-tier deny that way, and no field of the prompt-hook configuration
-    # suppresses it, so every deny costs the receiving agent roughly two
-    # kilobytes of noise ahead of the actionable sentence. continue-on-block
-    # leaves the denied search blocked and lets the turn survive it, so the
-    # agent reads the reason and re-issues the lookup through find_symbol
-    # without waiting to be prompted again; a deny ends the turn without it,
-    # stranding whatever work was in flight. Prompt hooks cannot inject
-    # advisory context, so a targeted deny is the only steering signal
-    # available. Read and Edit are intentionally NOT matched: a deny is never
-    # warranted from their input alone. Cost note: this runs a fast model on
-    # every matched Search/Grep call.
+    # lookup in a code file inside the project Serena serves, returning a
+    # reason that names the exact Serena tool (find_symbol) plus a
+    # graceful-fallback note; it ALLOWS every other case, including bare-name
+    # and usage cross-validation greps, comment/string searches, non-code
+    # files, searches outside the call's working tree, and searches inside a
+    # git worktree nested within another checkout. Serena serves one project,
+    # fixed when its server starts, and for a nested worktree that can be the
+    # enclosing checkout, so a deny there would send the agent to find_symbol
+    # for an answer drawn from the wrong tree. The gate sees only the call's
+    # JSON, so it recognizes a nested worktree by the cwd and path it is
+    # given, and it settles that scope question in a first step before
+    # weighing the pattern, because a fast model tends to pass over a scope
+    # rule listed as one more allow case among the pattern rules. Prompt
+    # hooks answer with flat {"ok": bool, "reason": str}; ok:true proceeds. On
+    # ok:false Claude Code denies the call and hands the agent the reason as
+    # the tool error, but prefixed by this hook's entire prompt text in square
+    # brackets with the argument placeholder left unsubstituted -- Claude Code
+    # renders the prompt-tier deny that way, and no field of the prompt-hook
+    # configuration suppresses it, so every deny costs the receiving agent
+    # nearly three kilobytes of noise ahead of the actionable sentence.
+    # continue-on-block leaves the denied search blocked and lets the turn
+    # survive it, so the agent reads the reason and re-issues the lookup
+    # through find_symbol without waiting to be prompted again; a deny ends
+    # the turn without it, stranding whatever work was in flight. Prompt hooks
+    # cannot inject advisory context, so a targeted deny is the only steering
+    # signal available. Read and Edit are intentionally NOT matched: a deny is
+    # never warranted from their input alone. Cost note: this runs a fast
+    # model on every matched Search/Grep call.
     - event: PreToolUse
       matcher: Search|Grep
       type: prompt
@@ -155,32 +170,43 @@ hooks:
       prompt: >-
         You are a fast, single-purpose tool-routing gate for code navigation. You
         are given a PreToolUse tool call (Search or Grep) as JSON at the end of
-        this prompt; read its tool_input.pattern and tool_input.path or glob.
-        Serena's find_symbol resolves a symbol DEFINITION (function, class,
-        method, type, or variable) semantically -- following aliases and renamed
-        imports that a text search misses -- so for a definition lookup it is
-        strictly better than a text search. DENY the search (respond ok=false)
-        ONLY when ALL THREE hold: (1) the pattern targets where a NAMED symbol is
-        DEFINED, for example "def NAME", "class NAME", "func NAME", "function
-        NAME", "interface NAME", "type NAME", or "struct NAME", or an equivalent
-        definition-site search; AND (2) the call clearly targets a code/source
-        file (for example a path or glob ending in .py, .ts, .tsx, .js, .go, .rs,
-        .java, .rb, .c, .cpp, or .cs), NOT a config, data, markdown, or docs file
-        (.md, .json, .yaml, .toml, .txt, .env); AND (3) a specific symbol name is
-        identifiable in the pattern. ALLOW the search (respond ok=true) in EVERY
-        other case and whenever you are unsure -- never strand the agent. You MUST
-        ALWAYS ALLOW: a bare symbol-name search, or any search for USAGES or
-        REFERENCES of a symbol (these are legitimate low-recall cross-validation
-        greps that complement Serena's reference search and must never be
-        blocked); searches for text inside comments or string literals; searches
-        whose target file type cannot be determined (no path or glob, or a broad
-        directory); searches in non-code, config, data, markdown, or docs files;
-        regex or plain-text patterns that are not a symbol-definition lookup; and
-        anything Serena cannot resolve. Respond with ONLY a raw JSON object and
-        nothing else -- no markdown fences and no prose. To deny, respond exactly
-        {"ok": false, "reason": "Use Serena find_symbol on the symbol 'NAME'
-        (include_body=True) to locate its definition semantically; if Serena is
-        unavailable or finds nothing, this text search is the correct fallback."},
+        this prompt. Serena's find_symbol resolves a symbol DEFINITION (function,
+        class, method, type, or variable) semantically -- following aliases and
+        renamed imports that a text search misses -- so for a definition lookup
+        it is strictly better than a text search, but only inside the one
+        project Serena serves. Decide in two steps. STEP 1, scope: read the
+        call's top-level cwd and its tool_input.path. If either one lies inside a
+        git worktree nested within another checkout, for example a path with a
+        .claude/worktrees/NAME segment in either slash direction, respond ok=true
+        and stop, because Serena may serve the enclosing checkout instead and
+        would answer from the wrong tree. If the path clearly lies outside the
+        working tree named by the cwd (another repository, a dependency cache,
+        or a system directory), respond ok=true and stop. Otherwise the search is
+        inside Serena's project: do not respond yet, and go on to STEP 2. STEP 2,
+        routing: read tool_input.pattern and tool_input.path or glob, and DENY
+        the search (respond ok=false) ONLY when ALL THREE hold: (1) the pattern
+        targets where a NAMED symbol is DEFINED, for example "def NAME", "class
+        NAME", "func NAME", "function NAME", "interface NAME", "type NAME", or
+        "struct NAME", or an equivalent definition-site search; AND (2) the call
+        clearly targets a code/source file (for example a path or glob ending in
+        .py, .ts, .tsx, .js, .go, .rs, .java, .rb, .c, .cpp, or .cs), NOT a
+        config, data, markdown, or docs file (.md, .json, .yaml, .toml, .txt,
+        .env); AND (3) a specific symbol name is identifiable in the pattern.
+        ALLOW the search (respond ok=true) in EVERY other case and whenever you
+        are unsure -- never strand the agent. You MUST ALWAYS ALLOW: a bare
+        symbol-name search, or any search for USAGES or REFERENCES of a symbol
+        (these are legitimate low-recall cross-validation greps that complement
+        Serena's reference search and must never be blocked); searches for text
+        inside comments or string literals; searches whose target file type
+        cannot be determined (no path or glob, or a broad directory); searches in
+        non-code, config, data, markdown, or docs files; regex or plain-text
+        patterns that are not a symbol-definition lookup; and anything else
+        Serena cannot resolve. Respond with ONLY a raw JSON object and nothing
+        else -- no markdown fences and no prose. To deny, respond exactly
+        {"ok": false, "reason": "Use Serena
+        find_symbol(name_path_pattern='NAME', include_body=True) to locate its
+        definition semantically; if Serena is unavailable or finds nothing, this
+        text search is the correct fallback."},
         replacing NAME with the actual symbol. To allow, respond exactly
         {"ok": true}. Include no other field. The tool call to evaluate:
         $ARGUMENTS

@@ -1,9 +1,14 @@
 # Serena Tool Enforcement Hook Configuration (advisory command tier)
 # This hook is a fast, deterministic, advisory tier of Serena steering. It NEVER
-# blocks: for a symbol-definition pattern in a code file it injects a nudge toward
-# the semantic Serena tools and lets the search proceed; otherwise it stays
-# silent. The nudge is advisory only and does not by itself guarantee the search
-# runs, since other steering may apply to the same call.
+# blocks: for a symbol-definition pattern in a code file inside the project
+# Serena serves, it injects a nudge toward the semantic Serena tools and lets the
+# search proceed; otherwise it stays silent. The nudge is advisory only and does
+# not by itself guarantee the search runs, since other steering may apply to the
+# same call.
+#
+# Values are plain YAML scalars; only values YAML cannot express as plain
+# scalars (a significant trailing space, a ": " inside the value, or a trailing
+# colon) are double-quoted.
 
 # Whether the hook is enabled (optional, default: true)
 enabled: true
@@ -84,9 +89,9 @@ blocked_patterns:
   - "class "
   # JavaScript/TypeScript
   - "function "
-  - "export function"
-  - "export class"
-  - "export const"
+  - export function
+  - export class
+  - export const
   - "interface "
   # Go
   - "func "
@@ -98,13 +103,15 @@ blocked_patterns:
 
 # Advisory nudge template (never a block)
 # Variables: {pattern}, {keyword}
+# The tool lines use the parameter names the Serena tools accept; paths passed
+# to them are relative to the root of the project Serena serves.
 nudge_message:
   header: "SERENA SUGGESTION:"
-  explanation: "This pattern contains '{keyword}', which usually indicates a code-symbol or definition lookup."
+  explanation: This pattern contains '{keyword}', which usually indicates a code-symbol or definition lookup.
   suggestion: "For code symbols, the Serena tools resolve definitions and usages semantically -- following aliases and renamed imports that a text search misses:"
   tools:
-    - "find_symbol(name, include_body=True) - locate a definition"
-    - "find_referencing_symbols(name, path) - locate usages"
-    - "get_symbols_overview(path) - outline a file structure"
-  footer: "Prefer the Serena tool when it is available. If Serena is unavailable or cannot resolve the symbol, or you are grepping a bare name to cross-validate reference completeness, this text search is the right choice."
+    - find_symbol(name_path_pattern='NAME', include_body=True) - locate a definition
+    - find_referencing_symbols(name_path='NAME', relative_path='<project-relative file defining NAME>') - locate usages
+    - get_symbols_overview(relative_path='<project-relative file>') - outline a file structure
+  footer: Prefer the Serena tool when it is available. If Serena is unavailable or cannot resolve the symbol, or you are grepping a bare name to cross-validate reference completeness, this text search is the right choice.
   pattern_label: "Pattern: {pattern}"

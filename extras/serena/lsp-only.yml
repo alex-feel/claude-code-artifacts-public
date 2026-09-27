@@ -1,9 +1,28 @@
-# See Serena's documentation for more details on concept of contexts.
-description: Description of the context, not used in the code.
-prompt: Prompt that will form part of the system prompt/initial instructions for agents started in this context.
+# Serena context "lsp-only": exposes only Serena's language-server-backed symbol
+# tools (navigation, diagnostics, symbol-aware edits) plus replace_in_files, for a
+# host agent whose own built-in tools already cover file reading, text search,
+# line edits, shell commands, and memory.
+#
+# Contexts are documented at
+# https://oraios.github.io/serena/02-usage/050_configuration.html#contexts and
+# the tool names at https://oraios.github.io/serena/01-about/035_tools.html.
+#
+# Serena reads a context once, when its MCP server starts; restarting the
+# language servers does not reload it, so a changed context takes effect only
+# after the Serena MCP server restarts. Tool exclusions apply only under Serena's
+# "tools" agent interface; under the REPL interface they are ignored and Serena
+# exposes its REPL tool in place of the symbol tools. The --agent-interface tools
+# option overrides the interface set in the global Serena configuration, but a
+# project's own .serena/project.yml agent_interface setting takes precedence over
+# both, so a project that selects REPL there does not get this context's tools.
+description: Language-server symbol tools only, for a host agent that handles files, text search, shell, and memory with its own tools
+# The context prompt reaches the agent only through Serena's system prompt, which
+# is delivered by the initial_instructions tool that this context excludes, so
+# the context contributes no prompt text. An empty string rather than null:
+# Serena renders this value as a template, and rendering null fails.
+prompt: ""
 excluded_tools:
   - activate_project
-  - check_onboarding_performed
   - create_text_file
   - delete_lines
   - delete_memory
@@ -38,7 +57,6 @@ excluded_tools:
   - list_dir
   - list_memories
   - onboarding
-  - prepare_for_new_conversation
   - read_file
   - read_memory
   - rename_memory
@@ -52,10 +70,7 @@ excluded_tools:
   # - safe_delete_symbol  # LSP tool
   - search_for_pattern
   - serena_info
-  - summarize_changes
-  - switch_modes
-  - think_about_collected_information
-  - think_about_whether_you_are_done
+  - serena_repl
   - write_memory
   - list_queryable_projects
   - query_project
@@ -75,3 +90,9 @@ tool_description_overrides: {}
 # concrete configuration, and other tools are excluded completely, allowing the set of tools to be minimal.
 # The `activate_project` tool will, therefore, be disabled in this case, as project switching is not allowed.
 single_project: true
+
+# Claude Code does not unpack structured MCP tool output: with structured output
+# on (Serena's automatic default), every result arrives as an escaped JSON string
+# wrapped in {"result": ...}, which costs tokens and hides the result's layout.
+# Off, each tool returns its plain text result.
+structured_tool_output: false
