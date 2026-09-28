@@ -180,9 +180,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Long-context evaluations show recall declining as the number of
         # tokens in context grows, and the same percentage of a large window
         # holds far more tokens than of a small one, so the thresholds are
-        # tiered by window size. The packaged tier values are a judgment from
-        # published long-context evaluations, not a measured optimum for any
-        # particular model.
+        # tiered by window size. Crit is sized to leave a typical turn and a
+        # state save room to finish before Claude Code's own auto-compaction
+        # trigger, which reserves the window's output allowance plus a fixed
+        # buffer near its end; warn is an earlier heads-up and, unlike crit,
+        # is a judgment call rather than derived from that trigger. The
+        # packaged tier values are grounded in how Claude Code times its own
+        # auto-compaction, not a measured optimum for any particular model.
         #
         # Threshold resolution (explicit configuration always wins over the
         # packaged defaults):
@@ -207,11 +211,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # lockstep. The 'enabled' flag above governs only this segment, never
         # the reminder or the snapshot.
         'thresholds_by_window': [
-            {'min_window': 500000, 'warn_threshold': 35, 'crit_threshold': 50},
+            {'min_window': 500000, 'warn_threshold': 57, 'crit_threshold': 75},
             {'min_window': 0, 'warn_threshold': 60, 'crit_threshold': 75},
         ],
-        'warn_threshold': 45,
-        'crit_threshold': 65,
+        'warn_threshold': 60,
+        'crit_threshold': 75,
         'ok_color': 'green',
         'warn_color': 'yellow',
         'crit_color': 'red',
