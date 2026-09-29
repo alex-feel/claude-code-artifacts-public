@@ -38,19 +38,6 @@ user-settings:
     # raised to keep the server from being killed mid-download.
     MCP_TIMEOUT: "300000"
 
-# Environment variables
-os-env-variables:
-  # TRANSITIONAL -- a deletion, not a setting. MCP_TIMEOUT now lives in the
-  # user-settings `env` block above, and this null removes the OS-level copy that
-  # earlier installs of this environment created. It is spelled out rather than simply
-  # omitted because an omitted key leaves the stale OS value in place, where it is
-  # harmless inside a session but misleading to anyone reading `echo $MCP_TIMEOUT`.
-  #
-  # Retire it once the machines running this environment have completed one install
-  # carrying it. A name parked here permanently also deletes the variable for anything
-  # else on the machine that sets it, which is not this environment's business.
-  MCP_TIMEOUT: null
-
 # Additional files to download.
 # Every dest below is an explicit, unique FILE path (never a bare directory):
 # files-to-download entries are merged identity-based on the final file path
