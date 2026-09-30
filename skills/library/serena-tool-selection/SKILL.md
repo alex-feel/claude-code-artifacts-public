@@ -1,9 +1,7 @@
 ---
 name: serena-tool-selection
 description: |
-  MANDATORY tool selection protocol for Serena LSP tools vs Claude Code built-in tools.
-  ALWAYS use when your tools list includes any mcp__serena__* tools, including tools listed only by name as deferred.
-  This skill OVERRIDES default tool selection behavior for code navigation tasks.
+  MANDATORY tool-selection protocol for Serena LSP tools (mcp__serena__*) versus the Claude Code built-in Grep, Search, Read, and Edit tools for code inside the project Serena serves: which Serena tool answers each navigation or editing task, how to load deferred Serena tool schemas, name-path and relative-path conventions, recall limits, and fallbacks. ALWAYS use it when your tools list includes any mcp__serena__* tools, including tools listed only by name as deferred, BEFORE the first search for, read of, or edit to source code in that project -- finding where a function, class, or method is defined or used, outlining a file, reading diagnostics, renaming, replacing, inserting, or deleting a symbol, or applying one textual change across many files. It OVERRIDES default tool-selection behavior for code navigation and editing.
 ---
 
 <requirement>
