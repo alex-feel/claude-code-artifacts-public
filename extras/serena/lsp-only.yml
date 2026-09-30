@@ -80,9 +80,21 @@ included_optional_tools:
   - restart_language_server
   - get_diagnostics_for_symbol
 
-# mapping of tool names to an override of their descriptions (the default description is the docstring of the Tool's apply method).
-# Sometimes, tool descriptions are too long (e.g., for ChatGPT), or users may want to override them for another reason.
-tool_description_overrides: {}
+# Each entry replaces the description Serena gives a tool, which is otherwise the
+# docstring of the tool's apply method. Serena's own restart_language_server
+# description allows a restart only on the user's explicit request or after
+# confirmation. A restart changes no source or configuration file, so the
+# override lets the agent restart the language servers itself, and tells it what
+# a restart cannot fix.
+tool_description_overrides:
+  restart_language_server: >-
+    Restarts the project's language servers. Call it without asking the user
+    whenever a language server hangs, stops responding, or returns results that
+    are stale after files changed outside Serena. It rebuilds the servers from
+    the project configuration Serena loaded when it started and does not re-read
+    .serena/project.yml, so it cannot help when that configuration lists no
+    language servers; an edited project.yml takes effect only after the Serena
+    MCP server itself restarts.
 
 # whether to assume that Serena shall only work on a single project in this context (provided that a project is given
 # when Serena is started).

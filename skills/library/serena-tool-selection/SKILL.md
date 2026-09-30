@@ -1,7 +1,7 @@
 ---
 name: serena-tool-selection
 description: |
-  MANDATORY tool-selection protocol for Serena LSP tools (mcp__serena__*) versus the Claude Code built-in Grep, Search, Read, and Edit tools for code inside the project Serena serves: which Serena tool answers each navigation or editing task, how to load deferred Serena tool schemas, name-path and relative-path conventions, recall limits, and fallbacks. ALWAYS use it when your tools list includes any mcp__serena__* tools, including tools listed only by name as deferred, BEFORE the first search for, read of, or edit to source code in that project -- finding where a function, class, or method is defined or used, outlining a file, reading diagnostics, renaming, replacing, inserting, or deleting a symbol, or applying one textual change across many files. It OVERRIDES default tool-selection behavior for code navigation and editing.
+  MANDATORY tool-selection protocol for Serena LSP tools (mcp__serena__*) versus the Claude Code built-in Grep, Search, Read, and Edit tools for code inside the project Serena serves: which Serena tool answers each navigation or editing task, how to load deferred Serena tool schemas, name-path and relative-path conventions, recall limits, restarting a hung language server, what to do when Serena reports no language servers, and fallbacks. ALWAYS use it when your tools list includes any mcp__serena__* tools, including tools listed only by name as deferred, BEFORE the first search for, read of, or edit to source code in that project -- finding where a function, class, or method is defined or used, outlining a file, reading diagnostics, renaming, replacing, inserting, or deleting a symbol, or applying one textual change across many files. It OVERRIDES default tool-selection behavior for code navigation and editing.
 ---
 
 <requirement>
@@ -62,7 +62,7 @@ Before ANY code navigation task, look for `mcp__serena__find_symbol` in your too
 | INSERT code before a symbol                                                                                                                    | `insert_before_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`   |
 | SAFELY DELETE a symbol (with reference check)                                                                                                  | `safe_delete_symbol(name_path_pattern="NAME", relative_path="FILE_DEFINING_IT")`         |
 | Apply the SAME textual change across MANY files (non-symbol text)                                                                              | `replace_in_files(needle="OLD", repl="NEW", mode="literal", dry_run=True)`               |
-| The language server hangs or stops responding                                                                                                  | Ask the user first, then `restart_language_server()` (see Error Handling)                |
+| A language server hangs, stops responding, or answers from a stale index                                                                       | `restart_language_server()` yourself, without asking (see Error Handling)                |
 
 ### STEP 3: Built-in Tools Are ONLY Correct For
 
@@ -138,11 +138,11 @@ The Serena tools granted by this deployment, grouped by category.
 
 ### Admin
 
-| Tool                      | Purpose                                                                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `restart_language_server` | Restart the language server(s) when one hangs or stops responding -- only on the user's explicit request or after the user confirms |
+| Tool                      | Purpose                                                                                                                                 |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `restart_language_server` | Restart the language servers when one hangs, stops responding, or answers from a stale index; call it yourself, without asking the user |
 
-**Restarting reloads the language servers only.** It does not reload Serena's context or configuration: a changed context takes effect only after the Serena MCP server itself restarts, which means restarting Claude Code.
+**Restarting touches the language servers and nothing else.** It changes no source or configuration file, so it needs no confirmation: call it yourself whenever a language server hangs, stops responding, answers from a stale index, or keeps failing. It rebuilds the servers from the project configuration Serena loaded when its MCP server started, and it re-reads neither that configuration nor Serena's context, so an edited `.serena/project.yml` or a changed context takes effect only after the Serena MCP server itself restarts, which means restarting Claude Code. Serena's default description of this tool says to restart only on the user's request or after confirmation. This deployment's Serena context replaces that wording; if the description you see still carries it, the installed context is out of date, and you still restart without asking.
 
 </serena_tools_reference>
 
@@ -166,9 +166,17 @@ Three Serena tools carry limitations that change how you must use them: `find_re
 
 1. **Retry once** -- the language server may need a moment, for example right after files changed on disk.
 2. **Check the call against the loaded schema** -- a wrong parameter name, an absolute path, or a directory where a file is required fails regardless of the language server's state.
-3. **If the language server hangs or keeps failing**, ask the user before calling `restart_language_server` -- Serena's own contract allows it only on the user's explicit request or after confirmation.
+3. **If the language server hangs, keeps failing, or keeps answering from a stale index**, call `restart_language_server` yourself, without asking the user, then retry the call. The exception is an error saying no language servers are available: a restart cannot fix it, so follow "If Serena Reports No Language Servers" below instead.
 4. **Document the failure** in your response.
 5. **Fall back to built-in tools** only after documenting the Serena failure.
+
+### If Serena Reports No Language Servers
+
+`No language servers available in the manager`, or a `Cannot extract symbols from file ...` error ending in `Active language servers: []`, means Serena never started a language server for this project, because its project configuration lists none. The language server is not down, and restarting it cannot help: `restart_language_server` rebuilds from the configuration Serena loaded when it started, which is still empty. The empty list typically comes from Serena itself: it writes `language_servers: []` when it creates `.serena/project.yml` before the repository holds any source file it recognizes, and it never re-detects languages once that file exists.
+
+1. **Set the language servers.** In the `.serena/project.yml` at the root of the project Serena serves, set `language_servers` to the ids of the repository's languages, for example `[python]`; the comments above that key list the valid ids. When `.serena/` is gitignored, the edit changes nothing tracked; when the file is tracked, the edit is a repository change like any other.
+2. **Tell the user that Claude Code needs a restart.** Serena reads `.serena/project.yml` only when its MCP server starts, so the language servers come up after Claude Code restarts, not in the current session.
+3. **Use the built-in tools until then,** and report that the project had no language server configured -- not that the language server is down.
 
 ### If Serena Tools Are Not Available
 
