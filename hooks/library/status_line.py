@@ -6,7 +6,7 @@
 """
 Status line hook for Claude Code.
 
-Displays: [model] | project | branch | session | [+N/-M] | [ctx:N%] | [eff:level] | [rate_limits] | [update] | [suffix]
+Displays: [model] | project | branch | session | [+N/-M] | [ctx:N%] | [eff:level] | [rate_limits] | [suffix]
 
 This script receives JSON via stdin and outputs a colored status line.
 Claude Code renders each line of stdout as its own status row: the first
@@ -15,7 +15,7 @@ carries notifications, printed only when at least one notification is
 active so it takes no space otherwise.
 
 The first line is composed of named blocks: model, project, branch, session,
-lines, context, effort, rate_limits, update, and suffix.
+lines, context, effort, rate_limits, and suffix.
 
 Features:
 - Configurable block order: the 'order' config list controls the segment
@@ -35,7 +35,6 @@ Features:
 - Reasoning effort display: the current effort level (low/medium/high/xhigh/max)
   with per-level colors; hidden for models without effort support
 - Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
-- Update availability indicator: shows "UPD v{version}" when a marker file is present
 - Configurable suffix: optional custom text at end of status line
 - Notifications row (disabled by default): an optional second output row for
   notification segments; currently carries the /compact reminder, which
@@ -49,9 +48,7 @@ Features:
 
 The 'order' list controls sequence only and applies to the first row. Block
 visibility is controlled exclusively by each block's 'enabled' flag and by
-payload presence (the suffix block shows only when its text is non-empty; the
-update block shows only when a command name is configured, the marker file
-exists, and the block is enabled).
+payload presence (the suffix block shows only when its text is non-empty).
 
 Configuration is loaded from external YAML file when provided.
 """
@@ -120,7 +117,6 @@ _DEFAULT_BLOCK_ORDER: tuple[str, ...] = (
     'context',
     'effort',
     'rate_limits',
-    'update',
     'suffix',
 )
 
@@ -128,7 +124,6 @@ _DEFAULT_BLOCK_ORDER: tuple[str, ...] = (
 # Default configuration - used when no config file provided
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
-    'command_name': '',
     'protected_branches': ['main', 'master'],
     # Separator string printed between rendered blocks. An empty string is
     # allowed and joins the blocks without any spacing.
@@ -256,11 +251,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
             'five_hour': 'five_hour',
             'seven_day': 'seven_day',
         },
-    },
-    'update': {
-        'enabled': True,
-        'color': 'yellow',
-        'bold': False,
     },
     'suffix': {
         'text': '',
@@ -947,50 +937,6 @@ def get_suffix_display(config: dict[str, Any]) -> str | None:
     return _paint(text, suffix_config.get('color'), 'cyan', suffix_config.get('bold') is True)
 
 
-def get_update_indicator(config: dict[str, Any]) -> str | None:
-    """Check for configuration update availability and return a status indicator.
-
-    Reads the existence-based marker file to determine if a newer version
-    of the environment configuration is available. Returns a formatted
-    indicator string (YELLOW by default) or None if no update is available.
-
-    Args:
-        config: Configuration dictionary with an optional 'command_name' key
-            and an `update` sub-dict with `enabled` (bool), `color`, and
-            `bold`.
-
-    Returns:
-        ANSI-colored update indicator string, or None if no update available,
-        command_name is not configured, or the block is disabled.
-    """
-    update_config = _as_dict(config.get('update'), DEFAULT_CONFIG['update'])
-    if not update_config.get('enabled', True):
-        return None
-
-    command_name = config.get('command_name', '')
-    if not command_name:
-        return None
-
-    try:
-        marker_path = Path.home() / '.claude' / f'{command_name}-update-available.json'
-        if not marker_path.exists():
-            return None
-
-        marker_data: dict[str, Any] = json.loads(marker_path.read_text(encoding='utf-8'))
-        available_version = marker_data.get('available_version', '')
-        if not available_version:
-            return None
-
-        return _paint(
-            f'UPD v{available_version}',
-            update_config.get('color'),
-            'yellow',
-            update_config.get('bold') is True,
-        )
-    except Exception:
-        return None
-
-
 def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
     """
     Format the Claude rate-limits status as a compact colored statusline segment.
@@ -1392,7 +1338,6 @@ def main() -> None:
         'context': lambda: get_context_display(payload, config),
         'effort': lambda: get_effort_display(payload, config),
         'rate_limits': lambda: get_rate_limits_display(payload, config),
-        'update': lambda: get_update_indicator(config),
         'suffix': lambda: get_suffix_display(config),
     }
 
