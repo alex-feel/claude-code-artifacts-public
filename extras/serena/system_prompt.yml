@@ -1,8 +1,9 @@
-# Override Serena's prompt templates so the host application (e.g., AEGIS) fully
-# governs agent behavior through its own system prompt, skills, and rules, and
-# Serena contributes no prompt text of its own. When this file is placed in
-# ~/.serena/prompt_templates/, Serena merges prompt templates per key, so only the
-# keys defined here are replaced; every other prompt keeps its default.
+# Override Serena's prompt templates so the host application (for example, a
+# Claude Code environment) fully governs agent behavior through its own system
+# prompt, skills, and rules, and Serena contributes no prompt text of its own.
+# When this file is placed in ~/.serena/prompt_templates/, Serena merges prompt
+# templates per key, so only the keys defined here are replaced; every other
+# prompt keeps its default.
 #
 # Two distinct Serena prompt fields must both be emptied:
 # - system_prompt: the full "Serena Instructions Manual", delivered on demand when
