@@ -176,7 +176,8 @@ _CRIT_REASONS = (
 _CRIT_KEEP_WORKING = f'The urgency concerns only when to recommend compaction, never how you work: {_KEEP_WORKING}.'
 
 # The opening of each text, by kind and tier: why the advice is given and how
-# pressing it is. The rest of every text is the shared _BODY.
+# pressing it is. An advisory continues with _BODY, a reminder with
+# _REMINDER_BODY.
 _OPENINGS: dict[str, dict[str, str]] = {
     'advisory': {
         'warn': (
@@ -203,9 +204,9 @@ _OPENINGS: dict[str, dict[str, str]] = {
     },
 }
 
-# The part every text shares: what a milestone is, save first, the tier's line
-# on its own, the turns the line belongs to, and the end of the advice at a
-# compaction. {save_instruction} and {line} are filled in per text.
+# The body of an advisory: what a milestone is, save first, the tier's line on
+# its own, the turns the line belongs to, and the end of the advice at a
+# compaction. {save_instruction} and {line} are filled in per tier.
 _BODY = (
     ' A natural milestone is the end of a reply that finishes a unit of work or a phase, lands a change, or pauses '
     'while waiting on background work such as a workflow, subagents, or a long-running command. '
@@ -218,6 +219,18 @@ _BODY = (
     'and only when that reply ends at a natural milestone. Every later user turn carries a CONTEXT REMINDER for as '
     'long as this advice applies, so a turn that carries neither needs no line, even if an earlier reply ended with '
     'one. If the conversation is compacted, this advice ends with the compaction: do not carry it or the '
+    'recommendation line into the summary or its next steps.'
+)
+
+# The body of a reminder. A reminder follows its tier's advisory, or the crit
+# advisory that also marks warn, in the same uncompacted context, so it carries
+# the tier's line and the turn scope and leaves the rest to that advisory.
+_REMINDER_BODY = (
+    ' The CONTEXT ADVISORY earlier in this conversation still applies: only when this reply ends at a natural '
+    'milestone as it defines one, first save as it describes, then end the reply with this line as its last line, '
+    'on its own line after a blank line:\n'
+    '{line}\n'
+    'If the conversation is compacted, this advice ends with the compaction: do not carry it or the '
     'recommendation line into the summary or its next steps.'
 )
 
@@ -245,9 +258,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'snapshot_dir': '',
     # What to save at a milestone before recommending compaction: a clause
     # that completes 'At such a milestone, first ...', without a final
-    # period, used in every advisory and reminder. A blank or non-string value
-    # falls back to this default. Keep it free of usage figures: explicit
-    # context-budget numbers can prompt a model to cut its work short.
+    # period, used in every advisory; a reminder refers back to its advisory
+    # instead of repeating it. A blank or non-string value falls back to this
+    # default. Keep it free of usage figures: explicit context-budget numbers
+    # can prompt a model to cut its work short.
     'save_instruction': DEFAULT_SAVE_INSTRUCTION,
 }
 
@@ -263,26 +277,24 @@ def advisory_text(tier: str, save_instruction: str) -> str:
     Returns:
         The advisory text.
     """
-    return _compose('advisory', tier, save_instruction)
+    return _OPENINGS['advisory'][tier] + _BODY.format(
+        save_instruction=save_instruction, line=RECOMMENDATION_LINES[tier],
+    )
 
 
-def reminder_text(tier: str, save_instruction: str) -> str:
+def reminder_text(tier: str) -> str:
     """Compose a tier's reminder, injected on each user turn after the tier's advisory.
+
+    The reminder refers back to the advisory for what a milestone is and what
+    to save, and carries the tier's recommendation line itself.
 
     Args:
         tier: 'warn' or 'crit'.
-        save_instruction: The clause saying what to save before recommending
-            compaction.
 
     Returns:
         The reminder text.
     """
-    return _compose('reminder', tier, save_instruction)
-
-
-def _compose(kind: str, tier: str, save_instruction: str) -> str:
-    """Join a text's opening with the shared body, filled in for the tier."""
-    return _OPENINGS[kind][tier] + _BODY.format(save_instruction=save_instruction, line=RECOMMENDATION_LINES[tier])
+    return _OPENINGS['reminder'][tier] + _REMINDER_BODY.format(line=RECOMMENDATION_LINES[tier])
 
 
 def resolve_snapshot_directory(configured: object) -> Path:
@@ -548,15 +560,14 @@ def advise(input_data: dict[str, Any], config: dict[str, Any]) -> str | None:
     if SEVERITY_RANK[severity] < SEVERITY_RANK[lowest]:
         return None
 
-    save_instruction = _save_instruction(config)
     if claim_tier(markers[severity], severity):
         if severity != lowest:
             # Reaching crit covers the advice of the warn tier below it, so a
             # later dip into the warn band brings the warn reminder only.
             claim_tier(markers[lowest], lowest)
-        return advisory_text(severity, save_instruction)
+        return advisory_text(severity, _save_instruction(config))
     if event == REMINDER_EVENT and markers[severity].is_file():
-        return reminder_text(severity, save_instruction)
+        return reminder_text(severity)
     return None
 
 

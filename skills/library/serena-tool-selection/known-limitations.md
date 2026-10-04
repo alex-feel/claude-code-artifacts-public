@@ -2,7 +2,7 @@
 
 ## Known Limitations of `find_referencing_symbols`
 
-**CRITICAL: `find_referencing_symbols` has HIGH PRECISION but CRITICALLY LOW RECALL for certain import patterns.** Non-zero results CAN be trusted (zero false positives observed). Zero results CANNOT be trusted (90-100% false negatives in affected patterns).
+**Critical: `find_referencing_symbols` has high precision but critically low recall for certain import patterns.** Non-zero results can be trusted (zero false positives observed). Zero results cannot be trusted (90-100% false negatives in affected patterns).
 
 ### Failure Mode Taxonomy
 
@@ -27,14 +27,14 @@
 
 1. Run `find_referencing_symbols` first for high-precision results
 2. **ALWAYS** cross-validate with `Grep(pattern: "function_name")` to catch dynamically-loaded callers
-3. Treat ZERO results from `find_referencing_symbols` as UNCERTAIN, not CONFIRMED
+3. Treat zero results from `find_referencing_symbols` as uncertain, not confirmed
 4. **NEVER conclude "zero callers" from `find_referencing_symbols` alone**
 
-The Grep cross-validation is EXEMPT from any Serena tool-enforcement hook when used explicitly for reference completeness verification.
+The Grep cross-validation is exempt from any Serena tool-enforcement hook when used explicitly for reference completeness verification.
 
 **Applies to `safe_delete_symbol` too:** it uses the same LSP reference-finding mechanism internally, so its "no references found" result carries the same false-negative risk. When deleting symbols that might be referenced through dynamic imports, cross-validate with Grep before calling `safe_delete_symbol`.
 
-### When Cross-Validation Is NOT Required
+### When Cross-Validation Is Not Required
 
 - Simple navigation: "Jump to where this function is called" (precision is sufficient)
 - Quick inspection: "Show me a few example usages" (non-exhaustive is acceptable)
@@ -42,16 +42,16 @@ The Grep cross-validation is EXEMPT from any Serena tool-enforcement hook when u
 
 ## Known Limitation: `find_implementations` for Python (LSP -32601)
 
-Serena's default Python language server is Pyright, which deliberately does NOT advertise the `implementationProvider` LSP capability (Microsoft design decision; unlikely to change). Per the LSP 3.17 specification, an unsupported method correctly returns JSON-RPC error `-32601 (MethodNotFound)`. This is PROTOCOL-CORRECT behavior, NOT a Serena or deployment defect. The tool works correctly for Java, TypeScript, Go, C#, and Rust. Serena also offers alternative Python language servers (such as basedpyright, ty, pyrefly, and jedi) selected through its own configuration; their `find_implementations` behavior is not covered here, so verify it before relying on it.
+Serena's default Python language server is Pyright, which deliberately does not advertise the `implementationProvider` LSP capability (Microsoft design decision; unlikely to change). Per the LSP 3.17 specification, an unsupported method correctly returns JSON-RPC error `-32601 (MethodNotFound)`. This is protocol-correct behavior, not a Serena or deployment defect. The tool works correctly for Java, TypeScript, Go, C#, and Rust. Serena also offers alternative Python language servers (such as basedpyright, ty, pyrefly, and jedi) selected through its own configuration; their `find_implementations` behavior is not covered here, so verify it before relying on it.
 
 **Python workarounds:**
 
 1. **`find_referencing_symbols`** -- finds usages including subclass references; combined with manual inspection it surfaces concrete implementations.
 2. **`code-review-graph` `inheritors_of` query pattern** -- when the `mcp__code-review-graph__*` tools are available, use `query_graph_tool(pattern="inheritors_of", target="ClassName")` to enumerate Python subclasses.
 
-## Known Limitation: `get_diagnostics_for_symbol` is OPT-IN
+## Known Limitation: `get_diagnostics_for_symbol` is Opt-In
 
-This tool is OPTIONAL in Serena upstream (inherits `ToolMarkerOptional` -- disabled by default). This deployment launches Serena with its `lsp-only` context, which already opts the tool in by listing it under `included_optional_tools` alongside `restart_language_server`:
+This tool is optional in Serena upstream (inherits `ToolMarkerOptional` -- disabled by default). This deployment launches Serena with its `lsp-only` context, which already opts the tool in by listing it under `included_optional_tools` alongside `restart_language_server`:
 
 ```yaml
 included_optional_tools:
@@ -63,4 +63,4 @@ The environment setup installs that context as `~/.serena/contexts/lsp-only.yml`
 
 **Note on `~/.serena/serena_config.yml`:** this is Serena's global configuration, which the environment setup does not manage. Editing it is not required and not recommended for this tool: the `lsp-only` context is the single place that decides which optional tools are included.
 
-If the tool returns "tool not found" errors, the installed context at `~/.serena/contexts/lsp-only.yml` predates the opt-in -- a stale install, not a configuration defect. Do NOT edit the installed copy directly, since the next environment setup overwrites it; re-run the environment setup so it installs the current context, then restart Claude Code. Serena reads its context only when its MCP server starts, so `restart_language_server` does NOT apply a refreshed context: it restarts the language servers alone.
+If the tool returns "tool not found" errors, the installed context at `~/.serena/contexts/lsp-only.yml` predates the opt-in -- a stale install, not a configuration defect. Do not edit the installed copy directly, since the next environment setup overwrites it; re-run the environment setup so it installs the current context, then restart Claude Code. Serena reads its context only when its MCP server starts, so `restart_language_server` does not apply a refreshed context: it restarts the language servers alone.

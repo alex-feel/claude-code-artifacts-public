@@ -1,26 +1,26 @@
 ---
 name: serena-tool-selection
 description: |
-  MANDATORY tool-selection protocol for Serena LSP tools (mcp__serena__*) versus the Claude Code built-in Grep, Search, Read, and Edit tools for code inside the project Serena serves: which Serena tool answers each navigation or editing task, how to load deferred Serena tool schemas, name-path and relative-path conventions, recall limits, restarting a hung language server, what to do when Serena reports no language servers, and fallbacks. ALWAYS use it when your tools list includes any mcp__serena__* tools, including tools listed only by name as deferred, BEFORE the first search for, read of, or edit to source code in that project -- finding where a function, class, or method is defined or used, outlining a file, reading diagnostics, renaming, replacing, inserting, or deleting a symbol, or applying one textual change across many files. It OVERRIDES default tool-selection behavior for code navigation and editing.
+  Mandatory tool-selection protocol for Serena LSP tools (mcp__serena__*) versus the Claude Code built-in Grep, Search, Read, and Edit tools for code inside the project Serena serves: which Serena tool answers each navigation or editing task, how to load deferred Serena tool schemas, name-path and relative-path conventions, recall limits, restarting a hung language server, what to do when Serena reports no language servers, and fallbacks. ALWAYS use it when your tools list includes any mcp__serena__* tools, including tools listed only by name as deferred, before the first search for, read of, or edit to source code in that project -- finding where a function, class, or method is defined or used, outlining a file, reading diagnostics, renaming, replacing, inserting, or deleting a symbol, or applying one textual change across many files. It overrides default tool-selection behavior for code navigation and editing.
 ---
 
 <requirement>
 
-# CRITICAL: Mandatory Serena Tool Usage
+# Serena Tool Usage
 
-When Serena tools are available in your tools list, you MUST use them for ALL code navigation operations inside the project Serena serves. Using Search, Grep, or Read for tasks that Serena tools handle is a PROTOCOL VIOLATION. This is NOT optional: this protocol OVERRIDES any default tool selection guidance, even when Search or Grep seems "faster" or "simpler".
+When Serena tools are available, use them for code navigation and symbol-level editing inside the project Serena serves, in preference to Search, Grep, and Read: Serena resolves definitions and usages semantically, following aliases and renamed imports that a text search misses, so a text search for a symbol can return an incomplete set even when it looks faster or simpler. The built-in tools remain the right choice for the cases listed under Step 3, and as the fallback when Serena is unavailable or cannot resolve a symbol.
 
 </requirement>
 
 <prohibition>
 
-# EXPLICIT PROHIBITIONS
+# Symbol Searches to Route to Serena
 
-Before issuing any Search/Grep/Read call against code, scan this table. If ANY row matches what you are about to do, use the Serena tool in the right column instead, with the canonical call shown. Every path in a Serena call is relative to the project root, as described under "Name Paths and Relative Paths" below.
+Each row below names a text-search habit and the Serena tool that answers the same question completely, with the canonical call. Every path in a Serena call is relative to the project root, as described under "Name Paths and Relative Paths" below.
 
-| PROHIBITED Action                                                                                                                                                  | Use Instead                                                                  | Canonical Call                                                                                                                        |
+| Instead of                                                                                                                                                         | Use Instead                                                                  | Canonical Call                                                                                                                        |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `Search(pattern: "def process_data", path: "/project/src")` or `Grep(pattern: "def process_data")` -- any Search/Grep pattern that IS a function/class/method name | `find_symbol` (definitions) or `find_referencing_symbols` (usages)           | `find_symbol(name_path_pattern="process_data", include_body=True)`                                                                    |
+| `Search(pattern: "def process_data", path: "/project/src")` or `Grep(pattern: "def process_data")` -- any Search/Grep pattern that is a function/class/method name | `find_symbol` (definitions) or `find_referencing_symbols` (usages)           | `find_symbol(name_path_pattern="process_data", include_body=True)`                                                                    |
 | `Grep(pattern: "validate_input\\(...")` or `Search(pattern: "validate_input(", output_mode: "content")` -- any search for a symbol's usages/calls                  | `find_referencing_symbols` + Grep cross-validation when completeness matters | `find_referencing_symbols(name_path="validate_input", relative_path="src/validation.py")`                                             |
 | `Read` entire file to understand structure                                                                                                                         | `get_symbols_overview`                                                       | `get_symbols_overview(relative_path="src/module.py")`                                                                                 |
 | Multiple `Edit` calls to rename a symbol                                                                                                                           | `rename_symbol`                                                              | `rename_symbol(name_path="old_func", relative_path="src/module.py", new_name="new_func")`                                             |
@@ -29,11 +29,9 @@ Before issuing any Search/Grep/Read call against code, scan this table. If ANY r
 | `find_referencing_symbols` then manually checking results and deleting via `Edit` -- manual ref-check + `Edit` to delete                                           | `safe_delete_symbol`                                                         | `safe_delete_symbol(name_path_pattern="old_handler", relative_path="src/handlers.py")`                                                |
 | Separate `Edit` calls file by file across the project -- repeating an identical `Edit` across many files for one textual change                                    | `replace_in_files` (dry run first)                                           | `replace_in_files(needle="old_key", repl="new_key", mode="literal", dry_run=True)`, review the diff, then apply with `expected_count` |
 
-These prohibitions cover ANY Grep/Search against `.py`/`.ts`/`.js`/other code files inside the project Serena serves, performed to locate a symbol (definition or usage), whether or not the pattern is the literal symbol name: Serena is semantic -- it finds aliases and renamed imports -- and is faster.
+This table covers any Grep/Search against `.py`/`.ts`/`.js`/other code files inside the project Serena serves, performed to locate a symbol (definition or usage), whether or not the pattern is the literal symbol name: Serena is semantic -- it finds aliases and renamed imports -- and is faster.
 
 **Exceptions -- proceed with Search/Grep:** searching inside comments or string literals (not symbol names), and searching code outside the project Serena serves (another checkout, a dependency cache, a system directory), where Serena cannot resolve symbols at all.
-
-**Consequence of violating (even when no enforcement hook blocks):** an agent ran `Grep(pattern: "MyClass\\(", path: "/project/")` and found 5 usages, but `/project/utils/helpers.py` imports MyClass as `MC` -- Serena would find 12. The incomplete change introduced a bug. Search/Grep for symbols yields incomplete results because Grep cannot follow aliases or renamed imports.
 
 </prohibition>
 
@@ -41,42 +39,42 @@ These prohibitions cover ANY Grep/Search against `.py`/`.ts`/`.js`/other code fi
 
 ## Tool Selection Decision Tree
 
-### STEP 1: Load the Serena Tool Schemas
+### Step 1: Load the Serena Tool Schemas
 
-Before ANY code navigation task, look for `mcp__serena__find_symbol` in your tools list. Claude Code may list MCP tools only by name, as deferred tools whose parameter schemas are not loaded yet, and calling a deferred tool before its schema is loaded fails. When the Serena tools appear only as deferred names, load all of them at once before the first Serena call -- for example `ToolSearch(query="+serena", max_results=20)` -- and take every parameter name from the loaded schemas. If `find_symbol` is not listed, even as a deferred name, use built-in tools as the fallback: either no Serena tool is listed at all, or Serena lists `serena_repl` in its place, which means Serena runs its REPL interface -- typically because the project's own Serena configuration selects it -- and exposes none of the symbol tools this protocol covers.
+Before any code navigation task, look for `mcp__serena__find_symbol` in your tools list. Claude Code may list MCP tools only by name, as deferred tools whose parameter schemas are not loaded yet, and calling a deferred tool before its schema is loaded fails. When the Serena tools appear only as deferred names, load all of them at once before the first Serena call -- for example `ToolSearch(query="+serena", max_results=20)` -- and take every parameter name from the loaded schemas. If `find_symbol` is not listed, even as a deferred name, use built-in tools as the fallback: either no Serena tool is listed at all, or Serena lists `serena_repl` in its place, which means Serena runs its REPL interface -- typically because the project's own Serena configuration selects it -- and exposes none of the symbol tools this protocol covers.
 
-### STEP 2: Classify Your Task
+### Step 2: Classify Your Task
 
-| If Your Task Is...                                                                                                                             | You MUST Use                                                                             |
+| If Your Task Is...                                                                                                                             | Use                                                                                      |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Find where a symbol is DEFINED (function/class/method/variable)                                                                                | `find_symbol(name_path_pattern="NAME", include_body=True)`                               |
-| Find what one specific OCCURRENCE refers to (go to definition from a usage site)                                                               | `find_declaration(relative_path="FILE_WITH_THE_USAGE", regex=r"obj\.(process)\(")`       |
-| Find IMPLEMENTATIONS of an abstract method/interface (Java/TS/Go/C#/Rust) -- NOT Python on the default Pyright backend (see Known Limitations) | `find_implementations(name_path="Interface/method", relative_path="FILE_DEFINING_IT")`   |
-| Find all USAGES/CALLS of a symbol                                                                                                              | `find_referencing_symbols(name_path="NAME", relative_path="FILE_DEFINING_IT")`           |
-| Understand a file's STRUCTURE (functions/classes outline)                                                                                      | `get_symbols_overview(relative_path="FILE")`                                             |
-| Get LSP DIAGNOSTICS (errors/warnings) for a file                                                                                               | `get_diagnostics_for_file(relative_path="FILE")`                                         |
-| Get LSP DIAGNOSTICS scoped to a specific symbol (OPT-IN upstream; already enabled -- see Known Limitations)                                    | `get_diagnostics_for_symbol(name_path="NAME", reference_file="FILE_DEFINING_IT")`        |
-| RENAME a symbol across the codebase                                                                                                            | `rename_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", new_name="NEW_NAME")` |
-| REPLACE a function's implementation                                                                                                            | `replace_symbol_body(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`    |
-| INSERT code after a symbol                                                                                                                     | `insert_after_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`    |
-| INSERT code before a symbol                                                                                                                    | `insert_before_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`   |
-| SAFELY DELETE a symbol (with reference check)                                                                                                  | `safe_delete_symbol(name_path_pattern="NAME", relative_path="FILE_DEFINING_IT")`         |
-| Apply the SAME textual change across MANY files (non-symbol text)                                                                              | `replace_in_files(needle="OLD", repl="NEW", mode="literal", dry_run=True)`               |
+| Find where a symbol is defined (function/class/method/variable)                                                                                | `find_symbol(name_path_pattern="NAME", include_body=True)`                               |
+| Find what one specific occurrence refers to (go to definition from a usage site)                                                               | `find_declaration(relative_path="FILE_WITH_THE_USAGE", regex=r"obj\.(process)\(")`       |
+| Find implementations of an abstract method/interface (Java/TS/Go/C#/Rust) -- not Python on the default Pyright backend (see Known Limitations) | `find_implementations(name_path="Interface/method", relative_path="FILE_DEFINING_IT")`   |
+| Find all usages/calls of a symbol                                                                                                              | `find_referencing_symbols(name_path="NAME", relative_path="FILE_DEFINING_IT")`           |
+| Understand a file's structure (functions/classes outline)                                                                                      | `get_symbols_overview(relative_path="FILE")`                                             |
+| Get LSP diagnostics (errors/warnings) for a file                                                                                               | `get_diagnostics_for_file(relative_path="FILE")`                                         |
+| Get LSP diagnostics scoped to a specific symbol (opt-in upstream; already enabled -- see Known Limitations)                                    | `get_diagnostics_for_symbol(name_path="NAME", reference_file="FILE_DEFINING_IT")`        |
+| Rename a symbol across the codebase                                                                                                            | `rename_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", new_name="NEW_NAME")` |
+| Replace a function's implementation                                                                                                            | `replace_symbol_body(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`    |
+| Insert code after a symbol                                                                                                                     | `insert_after_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`    |
+| Insert code before a symbol                                                                                                                    | `insert_before_symbol(name_path="NAME", relative_path="FILE_DEFINING_IT", body="...")`   |
+| Safely delete a symbol (with reference check)                                                                                                  | `safe_delete_symbol(name_path_pattern="NAME", relative_path="FILE_DEFINING_IT")`         |
+| Apply the same textual change across many files (non-symbol text)                                                                              | `replace_in_files(needle="OLD", repl="NEW", mode="literal", dry_run=True)`               |
 | A language server hangs, stops responding, or answers from a stale index                                                                       | `restart_language_server()` yourself, without asking (see Error Handling)                |
 
-### STEP 3: Built-in Tools Are ONLY Correct For
+### Step 3: When Built-in Tools Are the Right Choice
 
-- Searching text in COMMENTS or STRINGS (not symbol names)
-- Finding FILES by name pattern (Glob)
-- Editing at KNOWN line numbers (when you already have exact lines)
-- Reading NON-CODE files (YAML, JSON, Markdown, configs)
-- Code OUTSIDE the project Serena serves (another checkout, a dependency cache, a system directory)
+- Searching text in comments or strings (not symbol names)
+- Finding files by name pattern (Glob)
+- Editing at known line numbers (when you already have exact lines)
+- Reading non-code files (YAML, JSON, Markdown, configs)
+- Code outside the project Serena serves (another checkout, a dependency cache, a system directory)
 
 ## Name Paths and Relative Paths
 
 **Which project.** Serena serves exactly one project, detected when its server starts: the nearest directory at or above the directory Claude Code was launched in that holds `.serena/project.yml` or `.git`. A separate checkout -- including a git worktree nested inside that project, which carries its own `.git` file -- is a different project that Serena does not see, and when no such directory exists Serena serves no project at all.
 
-**`relative_path`** is always relative to that project root, written like `src/module.py`, never as an absolute path. `find_symbol` accepts a file or a directory (or no `relative_path`, to search the whole project). The tools that act on one known symbol -- `find_referencing_symbols`, `find_implementations`, `rename_symbol`, `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, and `safe_delete_symbol` -- take the FILE that defines the symbol, not a directory. `find_declaration` takes the file that holds the usage being resolved.
+**`relative_path`** is always relative to that project root, written like `src/module.py`, never as an absolute path. `find_symbol` accepts a file or a directory (or no `relative_path`, to search the whole project). The tools that act on one known symbol -- `find_referencing_symbols`, `find_implementations`, `rename_symbol`, `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, and `safe_delete_symbol` -- take the file that defines the symbol, not a directory. `find_declaration` takes the file that holds the usage being resolved.
 
 **A name path** addresses a symbol inside a file the way a filesystem path addresses a file:
 
@@ -99,10 +97,10 @@ The Serena tools granted by this deployment, grouped by category.
 
 | Tool                         | Purpose                                                                                       | Canonical Usage                                                                                            |
 | ---------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `find_symbol`                | Find where a symbol (function/class/method/variable) is DEFINED                               | `find_symbol(name_path_pattern="my_function", include_body=True)`                                          |
+| `find_symbol`                | Find where a symbol (function/class/method/variable) is defined                               | `find_symbol(name_path_pattern="my_function", include_body=True)`                                          |
 | `find_declaration`           | Resolve one occurrence of a symbol to its definition (LSP go-to-definition from a usage site) | `find_declaration(relative_path="src/app.py", regex=r"obj\.(process)\(")`                                  |
 | `find_implementations`       | Find concrete implementations of an abstract method/interface/protocol                        | `find_implementations(name_path="Runnable/run", relative_path="src/runnable.ts")`                          |
-| `find_referencing_symbols`   | Find ALL places where a symbol is USED (calls, imports, references)                           | `find_referencing_symbols(name_path="my_function", relative_path="src/module.py")`                         |
+| `find_referencing_symbols`   | Find all places where a symbol is used (calls, imports, references)                           | `find_referencing_symbols(name_path="my_function", relative_path="src/module.py")`                         |
 | `get_symbols_overview`       | Outline the top-level symbols of a file (`depth=1` adds their children)                       | `get_symbols_overview(relative_path="src/module.py")`                                                      |
 | `get_diagnostics_for_file`   | Retrieve LSP diagnostics (errors, warnings, hints) for a file, grouped by symbol              | `get_diagnostics_for_file(relative_path="src/module.py", min_severity=2)`                                  |
 | `get_diagnostics_for_symbol` | Retrieve LSP diagnostics scoped to one symbol (and optionally the symbols referencing it)     | `get_diagnostics_for_symbol(name_path="fn", reference_file="src/module.py", check_symbol_references=True)` |
@@ -110,11 +108,11 @@ The Serena tools granted by this deployment, grouped by category.
 **Key notes (Read-only):**
 
 - `find_symbol`: ALWAYS set `include_body=True` when you need the implementation (avoids a second query). Without it you get the name path, kind, and location only.
-- `find_declaration`: NOT a name lookup. The `regex` has exactly ONE capture group around the symbol at a usage site in `relative_path` -- for example `r"obj\.(process)\("` for the call `obj.process(...)` -- and the tool returns the symbol that occurrence resolves to. Give the regex enough surrounding context to match exactly one place in the file (or narrow it with `containing_symbol_name_path`). Use it when a name alone is ambiguous: an overloaded or common method name, an aliased import, or a call through an object. To look a symbol up by name, use `find_symbol`.
-- `find_implementations`: Supported for Java, TypeScript, Go, C#, Rust. **NOT supported for Python on Serena's default Pyright backend** (see Known Limitations -- LSP `-32601`). Use `find_referencing_symbols` + `code-review-graph` `inheritors_of` as the Python workaround.
-- `find_referencing_symbols`: High precision, **CRITICALLY LOW RECALL** for dynamic imports / runtime `sys.path` / attribute chains (see Known Limitations). ALWAYS cross-validate with Grep when completeness matters.
+- `find_declaration`: Not a name lookup. The `regex` has exactly one capture group around the symbol at a usage site in `relative_path` -- for example `r"obj\.(process)\("` for the call `obj.process(...)` -- and the tool returns the symbol that occurrence resolves to. Give the regex enough surrounding context to match exactly one place in the file (or narrow it with `containing_symbol_name_path`). Use it when a name alone is ambiguous: an overloaded or common method name, an aliased import, or a call through an object. To look a symbol up by name, use `find_symbol`.
+- `find_implementations`: Supported for Java, TypeScript, Go, C#, Rust. **Not supported for Python on Serena's default Pyright backend** (see Known Limitations -- LSP `-32601`). Use `find_referencing_symbols` + `code-review-graph` `inheritors_of` as the Python workaround.
+- `find_referencing_symbols`: High precision, **critically low recall** for dynamic imports / runtime `sys.path` / attribute chains (see Known Limitations). ALWAYS cross-validate with Grep when completeness matters.
 - `get_diagnostics_for_file`: `min_severity` sets the least severe level returned -- 1 for errors only, 2 for errors and warnings, 4 (the default) for everything down to hints; `start_line`/`end_line` (0-based) narrow the range.
-- `get_diagnostics_for_symbol`: **OPT-IN upstream** -- already enabled by this deployment's Serena context. See Known Limitations.
+- `get_diagnostics_for_symbol`: **Opt-in upstream** -- already enabled by this deployment's Serena context. See Known Limitations.
 
 ### Mutation (editing)
 
@@ -125,7 +123,7 @@ The Serena tools granted by this deployment, grouped by category.
 | `insert_after_symbol`  | Insert new code immediately after an existing class/function/method definition                     | `insert_after_symbol(name_path="existing", relative_path="src/module.py", body="def new():\n    pass")` |
 | `insert_before_symbol` | Insert new code immediately before an existing symbol (also: a new import before the first symbol) | `insert_before_symbol(name_path="existing", relative_path="src/module.py", body="...")`                 |
 | `safe_delete_symbol`   | Reference-check-then-delete; aborts and returns refs if any exist                                  | `safe_delete_symbol(name_path_pattern="MyClass/old", relative_path="src/calc.py")`                      |
-| `replace_in_files`     | Apply ONE identical literal/regex text replacement across MANY files                               | `replace_in_files(needle="old_key", repl="new_key", mode="literal", dry_run=True)`                      |
+| `replace_in_files`     | Apply one identical literal/regex text replacement across many files                               | `replace_in_files(needle="old_key", repl="new_key", mode="literal", dry_run=True)`                      |
 
 **Key notes (Mutation):**
 
@@ -133,8 +131,8 @@ The Serena tools granted by this deployment, grouped by category.
 - `replace_symbol_body`: `body` is the complete new definition, signature line included (whether a preceding docstring or decorator belongs to it depends on the language). Retrieve the current definition with `find_symbol(..., include_body=True)` first, so you know exactly what the body spans.
 - `insert_after_symbol` / `insert_before_symbol`: Symbol-aware positioning that survives line-number changes -- no need to compute line numbers. Anchor `insert_after_symbol` on a class, function, or method definition, never on an assignment such as a constant or field.
 - Code you have seen only through Serena counts as unread for the built-in Edit tool, which refuses to edit a file that was not read with Read; edit such code with the Serena editing tools, or Read the file before using Edit.
-- `safe_delete_symbol`: Atomic check-then-delete; returns SUCCESS only when no references exist. If references are found, returns their file/line locations so you can handle them first. **Inherits the `find_referencing_symbols` LOW-RECALL limitation** (see Known Limitations). Cross-validate with Grep BEFORE calling when dynamic imports may exist.
-- `replace_in_files`: TEXT-based, NOT symbol-aware -- correct ONLY for applying one identical textual change across many files in a single atomic call (a renamed config key, an import path fragment, a string constant). ALWAYS run with `dry_run=True` first and review the returned per-occurrence diff; then apply the reviewed subset via `occurrence_ids`, or set `expected_count` so the apply aborts if the match count changed. In `mode="regex"`, refer to capture groups in `repl` as `$!1`, `$!2`. For symbol renames use `rename_symbol`, for one symbol's implementation use `replace_symbol_body`, and for a single-file edit the built-in Edit tool remains correct. Scope with `relative_path` and `paths_include_glob`/`paths_exclude_glob` rather than defaulting to the whole project.
+- `safe_delete_symbol`: Atomic check-then-delete; returns success only when no references exist. If references are found, returns their file/line locations so you can handle them first. **Inherits the `find_referencing_symbols` low-recall limitation** (see Known Limitations). Cross-validate with Grep before calling when dynamic imports may exist.
+- `replace_in_files`: Text-based, not symbol-aware -- correct only for applying one identical textual change across many files in a single atomic call (a renamed config key, an import path fragment, a string constant). ALWAYS run with `dry_run=True` first and review the returned per-occurrence diff; then apply the reviewed subset via `occurrence_ids`, or set `expected_count` so the apply aborts if the match count changed. In `mode="regex"`, refer to capture groups in `repl` as `$!1`, `$!2`. For symbol renames use `rename_symbol`, for one symbol's implementation use `replace_symbol_body`, and for a single-file edit the built-in Edit tool remains correct. Scope with `relative_path` and `paths_include_glob`/`paths_exclude_glob` rather than defaulting to the whole project.
 
 ### Admin
 
@@ -180,9 +178,9 @@ Three Serena tools carry limitations that change how you must use them: `find_re
 
 ### If Serena Tools Are Not Available
 
-1. **Rule out deferred tools first** -- tools listed only by name are available once loaded (see STEP 1); they are not missing.
+1. **Rule out deferred tools first** -- tools listed only by name are available once loaded (see Step 1); they are not missing.
 2. **Note unavailability** -- "Serena tools not available, using built-in alternatives".
-3. **Use built-in tools** as documented in "Built-in Tools Are ONLY Correct For".
+3. **Use built-in tools** as documented under "Step 3: When Built-in Tools Are the Right Choice".
 4. **No protocol violation** -- falling back when tools are genuinely unavailable is correct.
 
 </error_handling>
