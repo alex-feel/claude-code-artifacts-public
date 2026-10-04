@@ -6,7 +6,7 @@
 """
 Status line hook for Claude Code.
 
-Displays: [model] | project | branch | session | [+N/-M] | [ctx:N%] | [eff:level] | [rate_limits] | [suffix]
+Displays: [model] | project | branch | session | [+N/-M] | [ctx:N%] | [eff:level] | [rate_limits] | [profile] | [suffix]
 
 This script receives JSON via stdin and outputs a colored status line.
 Claude Code renders each line of stdout as its own status row: the first
@@ -15,7 +15,7 @@ carries notifications, printed only when at least one notification is
 active so it takes no space otherwise.
 
 The first line is composed of named blocks: model, project, branch, session,
-lines, context, effort, rate_limits, and suffix.
+lines, context, effort, rate_limits, profile, and suffix.
 
 Features:
 - Configurable block order: the 'order' config list controls the segment
@@ -35,6 +35,9 @@ Features:
 - Reasoning effort display: the current effort level (low/medium/high/xhigh/max)
   with per-level colors; hidden for models without effort support
 - Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
+- Profile display (disabled by default): the name of the Claude Code
+  configuration directory the session runs under ($CLAUDE_CONFIG_DIR), or a
+  configurable label when that is the default directory (~/.claude)
 - Configurable suffix: optional custom text at end of status line
 - Notifications row (disabled by default): an optional second output row for
   notification segments; currently carries the /compact reminder, which
@@ -117,6 +120,7 @@ _DEFAULT_BLOCK_ORDER: tuple[str, ...] = (
     'context',
     'effort',
     'rate_limits',
+    'profile',
     'suffix',
 )
 
@@ -251,6 +255,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
             'five_hour': 'five_hour',
             'seven_day': 'seven_day',
         },
+    },
+    'profile': {
+        # Off by default. When enabled, names the Claude Code profile the
+        # session runs under. A profile is a configuration directory: the
+        # default one, ~/.claude, is shown as base_label whenever
+        # CLAUDE_CONFIG_DIR is unset, empty, or names that directory in any
+        # spelling; any other directory is shown by its own name, so
+        # CLAUDE_CONFIG_DIR=~/.claude/work shows "work". The label is worked
+        # out on every run, so one config file installed into several
+        # profiles shows each of them its own name.
+        'enabled': False,
+        # Label for the default configuration directory; "default" is the
+        # term Claude Code's own documentation uses for ~/.claude.
+        'base_label': 'default',
+        'color': 'bright_blue',
+        'bold': False,
     },
     'suffix': {
         'text': '',
@@ -918,6 +938,83 @@ def get_effort_display(data: dict[str, Any], config: dict[str, Any]) -> str | No
     return _paint(f'{label}{level}', color_value, 'cyan', effort_config.get('bold') is True)
 
 
+def _default_config_directory() -> Path:
+    """Return Claude Code's default configuration directory, ~/.claude.
+
+    Returns:
+        The .claude directory in the user's home directory.
+    """
+    return Path.home() / '.claude'
+
+
+def resolve_config_directory() -> Path:
+    """Resolve the Claude Code configuration directory the session runs under.
+
+    Both the profile label and the default snapshot directory derive from
+    this one resolution, so they always name the same directory.
+
+    Returns:
+        $CLAUDE_CONFIG_DIR with surrounding blanks stripped and '~' expanded
+        when it is set and non-empty, and ~/.claude otherwise.
+    """
+    configured = os.environ.get('CLAUDE_CONFIG_DIR', '').strip()
+    return Path(configured).expanduser() if configured else _default_config_directory()
+
+
+def _profile_label(base_label: str) -> str:
+    """Name the profile, that is the configuration directory, the session runs under.
+
+    The default directory is recognized however CLAUDE_CONFIG_DIR spells it:
+    both paths are made absolute with symlinks and '..' resolved, then
+    compared under the platform's case and separator rules.
+
+    Args:
+        base_label: The label for the default directory, ~/.claude.
+
+    Returns:
+        base_label for the default directory; otherwise the directory's name,
+        or the whole path for a filesystem root, which has no name.
+    """
+    directory = resolve_config_directory()
+    default_directory = _default_config_directory()
+    if os.path.normcase(directory.resolve()) == os.path.normcase(default_directory.resolve()):
+        return base_label
+    return directory.name or str(directory)
+
+
+def get_profile_display(config: dict[str, Any]) -> str | None:
+    """
+    Get the formatted profile segment if enabled.
+
+    Shows which Claude Code profile the session runs under: the configured
+    base label for the default configuration directory (~/.claude), and the
+    directory's own name for any other one, such as "work" for
+    CLAUDE_CONFIG_DIR=~/.claude/work.
+
+    Args:
+        config: Configuration dictionary; expects a `profile` sub-dict with
+            `enabled` (bool), `base_label` (str), `color`, and `bold`.
+
+    Returns:
+        ANSI-colored profile label, or None when the block is disabled.
+    """
+    default_profile = DEFAULT_CONFIG['profile']
+    profile_config = _as_dict(config.get('profile'), default_profile)
+    if not profile_config.get('enabled', False):
+        return None
+
+    base_label = profile_config.get('base_label')
+    if not isinstance(base_label, str) or not base_label:
+        base_label = default_profile['base_label']
+
+    return _paint(
+        _profile_label(base_label),
+        profile_config.get('color'),
+        default_profile['color'],
+        profile_config.get('bold') is True,
+    )
+
+
 def get_suffix_display(config: dict[str, Any]) -> str | None:
     """
     Get the formatted suffix display if configured.
@@ -1126,9 +1223,7 @@ def resolve_snapshot_directory(configured: object) -> Path:
     """
     if isinstance(configured, str) and configured.strip():
         return Path(os.path.expandvars(configured.strip())).expanduser()
-    config_dir = os.environ.get('CLAUDE_CONFIG_DIR', '').strip()
-    root = Path(config_dir).expanduser() if config_dir else Path.home() / '.claude'
-    return root / 'state' / 'context-usage'
+    return resolve_config_directory() / 'state' / 'context-usage'
 
 
 def _prune_snapshots(directory: Path, retention_days: object) -> None:
@@ -1338,6 +1433,7 @@ def main() -> None:
         'context': lambda: get_context_display(payload, config),
         'effort': lambda: get_effort_display(payload, config),
         'rate_limits': lambda: get_rate_limits_display(payload, config),
+        'profile': lambda: get_profile_display(config),
         'suffix': lambda: get_suffix_display(config),
     }
 
