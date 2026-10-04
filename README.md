@@ -39,7 +39,7 @@ Sends a desktop notification when Claude Code goes idle — waiting for your inp
 
 ### `status_line.py`
 
-Renders a colored Claude Code status line from the session JSON on stdin: model name, project directory, git branch (with `main`/`master` flagged in red), session id, added and removed line counts, compact 5h/7d rate-limit usage, an update-available indicator, and an optional custom suffix. Bracketed segments appear only when enabled and present. See [`hooks/library/status_line.py`](hooks/library/status_line.py).
+Renders a colored Claude Code status line from the session JSON on stdin: model name, project directory, git branch (with `main`/`master` flagged in red), session id, added and removed line counts, compact 5h/7d rate-limit usage, and an optional custom suffix. Bracketed segments appear only when enabled and present. See [`hooks/library/status_line.py`](hooks/library/status_line.py).
 
 Both hooks read their optional YAML configuration through the shared [`hooks/library/hook_config_loader.py`](hooks/library/hook_config_loader.py) helper, so install it alongside whichever hook you use.
 
