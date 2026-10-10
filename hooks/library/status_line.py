@@ -34,7 +34,9 @@ Features:
   reminder and the context snapshot, so every surface escalates together
 - Reasoning effort display: the current effort level (low/medium/high/xhigh/max)
   with per-level colors; hidden for models without effort support
-- Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored
+- Claude rate-limit display: compact 5h/7d usage percentages, threshold-colored;
+  a window at the configured level (crit by default) also shows the time left
+  until it resets, for example 5h:93% (resets 2h 15m)
 - Profile display (disabled by default): the name of the Claude Code
   configuration directory the session runs under ($CLAUDE_CONFIG_DIR), or a
   configurable label when that is the default directory (~/.claude)
@@ -245,6 +247,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'ok_color': 'green',
         'warn_color': 'yellow',
         'crit_color': 'red',
+        # Lowest level at which a window also shows the time left until it
+        # resets, read from its resets_at and painted in the window's color,
+        # as in "5h:93% (resets 2h 15m)": 'never', 'warn' (yellow or red), or
+        # 'crit' (red only). Any other value behaves like 'crit'.
+        'reset_display': 'crit',
         'bold': False,
         'window_keys': {
             # Verified key names from Claude Code's documented statusline JSON
@@ -361,6 +368,16 @@ _PRUNABLE_NAME_RE = re.compile(
 )
 
 _SECONDS_PER_DAY = 86400
+_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_MINUTE = 60
+
+# The window severities at which each rate_limits 'reset_display' value
+# appends the time left until the window resets.
+_RESET_DISPLAY_SEVERITIES: dict[str, frozenset[str]] = {
+    'never': frozenset(),
+    'warn': frozenset({'warn', 'crit'}),
+    'crit': frozenset({'crit'}),
+}
 
 
 def _as_dict(value: object, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -1034,6 +1051,36 @@ def get_suffix_display(config: dict[str, Any]) -> str | None:
     return _paint(text, suffix_config.get('color'), 'cyan', suffix_config.get('bold') is True)
 
 
+def _format_reset_countdown(resets_at: object, now: float) -> str | None:
+    """Format the time left until a rate-limit window resets.
+
+    Args:
+        resets_at: The window's `resets_at` value, expected to be Unix epoch
+            seconds.
+        now: The current time in Unix epoch seconds.
+
+    Returns:
+        `Xd Yh` when a day or more is left, `Xh Ym` when an hour or more is
+        left, `Ym` when a minute or more is left, and `<1m` below that, with a
+        zero second unit dropped (`2d`, `3h`); None when resets_at is not a
+        number or is not later than now.
+    """
+    reset_epoch = _as_number(resets_at)
+    if reset_epoch is None or reset_epoch <= now:
+        return None
+    seconds_left = int(reset_epoch - now)
+    if seconds_left < _SECONDS_PER_MINUTE:
+        return '<1m'
+    days, rest = divmod(seconds_left, _SECONDS_PER_DAY)
+    hours, rest = divmod(rest, _SECONDS_PER_HOUR)
+    minutes = rest // _SECONDS_PER_MINUTE
+    if days:
+        return f'{days}d {hours}h' if hours else f'{days}d'
+    if hours:
+        return f'{hours}h {minutes}m' if minutes else f'{hours}h'
+    return f'{minutes}m'
+
+
 def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str | None:
     """
     Format the Claude rate-limits status as a compact colored statusline segment.
@@ -1042,6 +1089,12 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
     `5h:N%  7d:M%` colored by threshold (ok_color below warn_threshold,
     warn_color at warn_threshold or above, crit_color at crit_threshold or
     above; GREEN/YELLOW/RED by default).
+
+    A window at or above the level `reset_display` names (`never`, `warn`, or
+    `crit`; any other value counts as `crit`) also shows the time left until
+    it resets, read from its `resets_at` and painted in the window's color, as
+    in `5h:93% (resets 2h 15m)`. A window whose `resets_at` is missing, not a
+    number, or not in the future shows its percentage alone.
 
     The 5-hour and 7-day window key names are configurable via
     `config['rate_limits']['window_keys']` to accommodate any future change in
@@ -1058,9 +1111,9 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
         data: Statusline input JSON (as a dict).
         config: Configuration dictionary; expects a `rate_limits` sub-dict with
                 `enabled` (bool), `warn_threshold` (int), `crit_threshold` (int),
-                `ok_color`, `warn_color`, `crit_color`, `bold`, and
-                `window_keys` (dict mapping 'five_hour' and 'seven_day' to
-                the verified JSON key names).
+                `ok_color`, `warn_color`, `crit_color`, `reset_display` (str),
+                `bold`, and `window_keys` (dict mapping 'five_hour' and
+                'seven_day' to the verified JSON key names).
 
     Returns:
         Colored compact segment string, or None when display is suppressed.
@@ -1082,6 +1135,11 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
     if not isinstance(crit, (int, float)):
         crit = 90
     bold = rl_config.get('bold') is True
+    reset_display = rl_config.get('reset_display')
+    if not isinstance(reset_display, str) or reset_display not in _RESET_DISPLAY_SEVERITIES:
+        reset_display = DEFAULT_CONFIG['rate_limits']['reset_display']
+    reset_severities = _RESET_DISPLAY_SEVERITIES[reset_display]
+    now = time.time()
 
     segments: list[str] = []
     for label, key in (('5h', window_keys.get('five_hour')), ('7d', window_keys.get('seven_day'))):
@@ -1095,12 +1153,17 @@ def get_rate_limits_display(data: dict[str, Any], config: dict[str, Any]) -> str
         if not isinstance(pct, (int, float)):
             continue
         if pct >= crit:
-            color_value, default_name = rl_config.get('crit_color'), 'red'
+            severity, color_value, default_name = 'crit', rl_config.get('crit_color'), 'red'
         elif pct >= warn:
-            color_value, default_name = rl_config.get('warn_color'), 'yellow'
+            severity, color_value, default_name = 'warn', rl_config.get('warn_color'), 'yellow'
         else:
-            color_value, default_name = rl_config.get('ok_color'), 'green'
-        segments.append(_paint(f'{label}:{int(pct)}%', color_value, default_name, bold))
+            severity, color_value, default_name = 'ok', rl_config.get('ok_color'), 'green'
+        text = f'{label}:{int(pct)}%'
+        if severity in reset_severities:
+            countdown = _format_reset_countdown(window_dict.get('resets_at'), now)
+            if countdown is not None:
+                text = f'{text} (resets {countdown})'
+        segments.append(_paint(text, color_value, default_name, bold))
 
     if not segments:
         return None
