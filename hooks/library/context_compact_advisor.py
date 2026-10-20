@@ -579,7 +579,10 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        input_data: object = json.load(sys.stdin)
+        # Claude Code writes the payload as UTF-8, so it is parsed from the raw
+        # bytes: the stdin text layer decodes with the locale's encoding, which on
+        # Windows is the ANSI code page.
+        input_data: object = json.load(sys.stdin.buffer)
     except json.JSONDecodeError:
         # Malformed stdin from the Claude Code wrapper is an external contract
         # violation with nothing actionable for the model; stay silent.

@@ -399,11 +399,14 @@ def main() -> None:
         if not config.get('enabled', True):
             sys.exit(0)
 
-        # Read JSON input from stdin. A body that parses as JSON but is not the
-        # documented mapping carries no event to act on, so it is read as an empty
-        # one and falls through the event gate below; reading its fields directly
-        # would raise and leave this hook with no verdict at all.
-        raw_input: Any = json.load(sys.stdin)
+        # Read JSON input from stdin. Claude Code writes the payload as UTF-8, so
+        # it is parsed from the raw bytes: the stdin text layer decodes with the
+        # locale's encoding, which on Windows is the ANSI code page. A body that
+        # parses as JSON but is not the documented mapping carries no event to act
+        # on, so it is read as an empty one and falls through the event gate below;
+        # reading its fields directly would raise and leave this hook with no
+        # verdict at all.
+        raw_input: Any = json.load(sys.stdin.buffer)
         input_data: dict[str, Any] = cast('dict[str, Any]', raw_input) if isinstance(raw_input, dict) else {}
 
         # Validate event type

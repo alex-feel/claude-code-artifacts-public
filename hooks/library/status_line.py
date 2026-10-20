@@ -60,6 +60,7 @@ Configuration is loaded from external YAML file when provided.
 
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -1401,6 +1402,9 @@ def write_context_snapshot(data: dict[str, Any], config: dict[str, Any]) -> Path
 def get_git_branch(cwd: str) -> str:
     """Get current git branch or status.
 
+    Git writes branch names as UTF-8, the encoding the row is written in, so its
+    output is decoded as UTF-8 rather than with the locale's encoding.
+
     Args:
         cwd: Current working directory to check for git.
 
@@ -1414,6 +1418,8 @@ def get_git_branch(cwd: str) -> str:
             ['git', 'branch', '--show-current'],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=2,
             cwd=cwd,
         )
@@ -1425,6 +1431,8 @@ def get_git_branch(cwd: str) -> str:
             ['git', 'rev-parse', '--short', 'HEAD'],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=2,
             cwd=cwd,
         )
@@ -1446,6 +1454,14 @@ def get_git_branch(cwd: str) -> str:
 
 def main() -> None:
     """Main entry point for status line hook."""
+    # Claude Code writes the payload as UTF-8 and reads the rows back as UTF-8,
+    # while the standard streams' text layers use the locale's encoding, which on
+    # Windows is the ANSI code page: it garbles a non-ASCII path read from the
+    # payload and cannot encode one in the row. So the payload is parsed from the
+    # raw bytes and the rows are written as UTF-8; only the encoding of stdout
+    # changes, its error handler stays the one the stream had.
+    stdout = cast('io.TextIOWrapper', sys.stdout)
+    stdout.reconfigure(encoding='utf-8', errors=stdout.errors)
     try:
         # Load configuration (defaults merged with config file if provided)
         config_loader = _load_config_loader()
@@ -1455,7 +1471,7 @@ def main() -> None:
         if not config.get('enabled', True):
             return
 
-        data = json.load(sys.stdin)
+        data = json.load(sys.stdin.buffer)
     except json.JSONDecodeError:
         print('Status: Error reading input')
         return
@@ -1463,7 +1479,7 @@ def main() -> None:
         # If config loading fails, use defaults
         config = DEFAULT_CONFIG
         try:
-            data = json.load(sys.stdin)
+            data = json.load(sys.stdin.buffer)
         except json.JSONDecodeError:
             print('Status: Error reading input')
             return
