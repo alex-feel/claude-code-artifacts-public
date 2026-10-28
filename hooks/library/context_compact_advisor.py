@@ -10,9 +10,10 @@ Advises the main agent to recommend /compact in two tiers that follow the
 status line's context severity: warn (its yellow, where the status line says
 "consider /compact") and crit (its red, where it says "run /compact now").
 Each tier's advisory keeps the model working at full quality and full scope
-and asks that, when a reply ends at a natural milestone (a unit of work or a
-phase finished, a change landed, a pause while waiting on background work),
-the model first save the full work state durably, re-saving whatever changed
+and asks that, when a reply ends at a natural milestone (a reply that would end
+there anyway: the task done, or the work waiting on the user or on background
+work, never a finished step whose next step is ready to take), the model first
+save the full work state durably, re-saving whatever changed
 since the previous save, and only then end the reply with the tier's one-line
 recommendation, set apart as a Markdown blockquote. The warn line suggests
 compacting when convenient in a calm, advisory tone; the crit line strongly
@@ -208,8 +209,11 @@ _OPENINGS: dict[str, dict[str, str]] = {
 # its own, the turns the line belongs to, and the end of the advice at a
 # compaction. {save_instruction} and {line} are filled in per tier.
 _BODY = (
-    ' A natural milestone is the end of a reply that finishes a unit of work or a phase, lands a change, or pauses '
-    'while waiting on background work such as a workflow, subagents, or a long-running command. '
+    ' A natural milestone is the end of a reply that would end at that point anyway: the task is done, or the work '
+    'waits on input only the user can give or on background work such as a workflow, subagents, or a long-running '
+    'command. Finishing a step, a phase, or a change is not a milestone while the next step needs nothing from the '
+    'user and nothing it depends on is still running: take that step in the same reply, and never end such a reply '
+    'on a statement of what you will do next so that the user can compact first. '
     'Never interrupt work in progress for this, and never recommend compaction in the middle of a step. '
     'At such a milestone, first {save_instruction}. '
     'Then end the reply with the recommendation as its last line, on its own line after a blank line, written '
@@ -227,7 +231,8 @@ _BODY = (
 # the tier's line and the turn scope and leaves the rest to that advisory.
 _REMINDER_BODY = (
     ' The CONTEXT ADVISORY earlier in this conversation still applies: only when this reply ends at a natural '
-    'milestone as it defines one, first save as it describes, then end the reply with this line as its last line, '
+    'milestone as it defines one, never ending a reply early to reach one, first save as it describes, then end the '
+    'reply with this line as its last line, '
     'on its own line after a blank line:\n'
     '{line}\n'
     'If the conversation is compacted, this advice ends with the compaction: do not carry it or the '
