@@ -149,11 +149,13 @@ hooks:
     # cannot inject advisory context, so a targeted deny is the only steering
     # signal available. Read and Edit are intentionally NOT matched: a deny is
     # never warranted from their input alone. Cost note: this runs a fast
-    # model on every matched Search/Grep call.
+    # model on every matched Search/Grep call, while the spinner shows the
+    # gate's own status line.
     - event: PreToolUse
       matcher: Search|Grep
       type: prompt
       continue-on-block: true
+      status-message: Checking the search against Serena routing
       prompt: >-
         You are a fast, single-purpose tool-routing gate for code navigation. You
         are given a PreToolUse tool call (Search or Grep) as JSON at the end of
