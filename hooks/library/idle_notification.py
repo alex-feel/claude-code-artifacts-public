@@ -28,7 +28,12 @@ falls outside the scan. A turn that writes no turn-end record, such as an
 interrupted turn or, with skip_idle_after_compaction off, a turn that was
 only a compaction, keeps the configured text. A third opt-in key,
 notification.original_message_types, shows Claude Code's own message (which
-names the tool, the session, or the outcome) for the listed types.
+names the tool, the session, or the outcome) for the listed types. A fourth,
+notification.title_with_project, names the session's project in the title,
+which tells apart sessions running in different projects at once; it applies
+only to types that report on the session the hook runs in, so
+agent_needs_input and agent_completed, which report on a local background
+session, keep notification.title.
 
 Trigger: Notification with a matcher covering the configured types
 (matcher: idle_prompt by default)
@@ -50,7 +55,9 @@ hook-internal defect masks; they implement the notification fallback chain and
 are intentionally preserved. Likewise _read_transcript_tail turns an
 unreadable transcript (OSError) and _parse_entry a line that is not JSON
 (ValueError) into an empty result, so the notification keeps its configured
-text.
+text, and _git_output turns a missing git, a git command that times out, or a
+directory git cannot run in (OSError, SubprocessError) into no output, so the
+project's name falls back to the next source of the name.
 """
 
 import asyncio
@@ -116,6 +123,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'transcript_scan_bytes': 16 * 1024 * 1024,
     'notification': {
         'title': 'Claude Code',
+        # Title naming the session's project, in which {project} stands for
+        # the project's name: the repository name of a git remote (origin,
+        # then upstream, then the others), else the basename of the
+        # repository's top-level directory, else the basename of the
+        # directory. The directory is the project directory Claude Code gives
+        # the hook, or the input's cwd when none is given. An unset key (null,
+        # empty, or not a string), a name that cannot be determined, and the
+        # types that report on a local background session rather than on this
+        # one (agent_needs_input, agent_completed) keep 'title'; an unset key
+        # and those types start no git process.
+        'title_with_project': None,
+        # Upper bound in seconds on each git command run to find the project's
+        # name for title_with_project. At most two run per notification, so a
+        # slow git delays it by up to twice this; a command that takes longer
+        # gives no answer, and the name comes from the next source, down to
+        # the directory's basename. A value that is not a positive number,
+        # such as 0 or null, runs git without a bound.
+        'project_name_timeout_seconds': 2.0,
         'message': 'Claude is waiting for your input',
         # Per-type message overrides keyed by notification type; a type
         # without an entry falls back to 'message'
@@ -736,6 +761,118 @@ def _idle_prompt_message(transcript_path: object, config: dict[str, Any], messag
     return message
 
 
+# Notification types that report on a local background session rather than
+# on the session the hook runs in. Which session's project directory and cwd
+# the hook input carries for them is not established, so they keep the
+# configured title and start no git process.
+_BACKGROUND_SESSION_TYPES = ('agent_needs_input', 'agent_completed')
+# Remotes tried first, in this order, for the project's name; the other
+# remotes follow in the order git lists them
+_PROJECT_REMOTES = ('origin', 'upstream')
+# The repository name that ends a remote URL, without its .git suffix
+_REPOSITORY_NAME_PATTERN = re.compile(r'/([^/]+?)(?:\.git)?$')
+
+
+def _git_output(args: list[str], directory: str, timeout: float | None) -> str:
+    """
+    Run a git command in a directory and return its output.
+
+    Git writes paths and names as UTF-8, so the output is decoded as UTF-8
+    rather than with the locale's encoding, which on Windows is the ANSI code
+    page.
+
+    Args:
+        args: The git arguments
+        directory: The directory git runs in
+        timeout: Seconds the command may run, or None for no bound
+
+    Returns:
+        The stripped standard output, which is empty when the command fails,
+        since git writes its errors to standard error, and when git is
+        missing, times out, or cannot run in the directory
+    """
+    try:
+        result = subprocess.run(
+            ['git', *args],
+            cwd=directory,
+            capture_output=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return result.stdout.strip()
+
+
+def _project_name(directory: str, timeout: float | None) -> str:
+    """
+    Name the project a directory belongs to.
+
+    Args:
+        directory: The session's directory
+        timeout: Seconds each git command may run, or None for no bound
+
+    Returns:
+        The repository name ending the fetch URL of origin, else of upstream,
+        else of the first other remote git lists whose URL ends in one; else
+        the basename of the repository's top-level directory, else that of
+        the directory itself, which is empty at a filesystem root
+    """
+    fetch_urls: dict[str, str] = {}
+    for line in _git_output(['remote', '-v'], directory, timeout).splitlines():
+        remote, _, listing = line.partition('\t')
+        url, _, direction = listing.rpartition(' ')
+        if direction == '(fetch)':
+            fetch_urls.setdefault(remote, url)
+    ordered = [remote for remote in _PROJECT_REMOTES if remote in fetch_urls]
+    ordered += [remote for remote in fetch_urls if remote not in _PROJECT_REMOTES]
+    for remote in ordered:
+        match = _REPOSITORY_NAME_PATTERN.search(fetch_urls[remote])
+        if match:
+            return match.group(1)
+    toplevel = _git_output(['rev-parse', '--show-toplevel'], directory, timeout)
+    return Path(toplevel or directory).name
+
+
+def _notification_title(notification_config: dict[str, Any], input_data: dict[str, Any]) -> str:
+    """
+    Choose the notification title.
+
+    The project directory Claude Code gives the hook stands for the session,
+    because the input's cwd follows the session into worktrees and other
+    directories; the cwd stands for it when no project directory is given.
+    A type that reports on a local background session keeps the configured
+    title, because which session's directory the input carries for it is not
+    established. Each git command run to name the project waits at most
+    project_name_timeout_seconds, read with its default because a config
+    file's notification section replaces the default section whole, and
+    without a bound when that value is not a positive number.
+
+    Args:
+        notification_config: The notification section of the configuration
+        input_data: The hook input
+
+    Returns:
+        title_with_project with {project} replaced by the project's name when
+        the template is set, the type reports on the session the hook runs
+        in, and the name can be determined; otherwise the configured title
+    """
+    title: str = notification_config.get('title') or DEFAULT_CONFIG['notification']['title']
+    template = notification_config.get('title_with_project')
+    if not isinstance(template, str) or not template or input_data.get('notification_type') in _BACKGROUND_SESSION_TYPES:
+        return title
+    directory = os.environ.get('CLAUDE_PROJECT_DIR') or input_data.get('cwd')
+    if not isinstance(directory, str) or not directory:
+        return title
+    bound = notification_config.get(
+        'project_name_timeout_seconds', DEFAULT_CONFIG['notification']['project_name_timeout_seconds'],
+    )
+    name = _project_name(directory, float(bound) if isinstance(bound, int | float) and bound > 0 else None)
+    return template.replace('{project}', name) if name else title
+
+
 def main() -> None:
     """Main hook execution function."""
     try:
@@ -770,7 +907,6 @@ def main() -> None:
             sys.exit(0)
 
         notification_config = config.get('notification', DEFAULT_CONFIG['notification'])
-        title: str = notification_config.get('title') or DEFAULT_CONFIG['notification']['title']
         message = _configured_message(notification_type, input_data.get('message', ''), notification_config)
         if notification_type == 'idle_prompt':
             idle_message = _idle_prompt_message(input_data.get('transcript_path'), config, message)
@@ -778,7 +914,7 @@ def main() -> None:
                 sys.exit(0)
             message = idle_message
 
-        send_notification(title, message, config)
+        send_notification(_notification_title(notification_config, input_data), message, config)
 
         # Terminate without interpreter finalization: after a dispatch, native
         # notification backends (WinRT COM on Windows) can abort the process
