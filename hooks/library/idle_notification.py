@@ -27,8 +27,13 @@ interface, which leaves no completion record, still counts until its launch
 falls outside the scan. A turn that writes no turn-end record, such as an
 interrupted turn or, with skip_idle_after_compaction off, a turn that was
 only a compaction, keeps the configured text. A third opt-in key,
-notification.original_message_types, shows Claude Code's own message (which
-names the tool, the session, or the outcome) for the listed types. A fourth,
+notification.original_message_types, shows Claude Code's own message for the
+listed types: it names the session that needs input or the outcome, and for a
+tool's permission prompt or a question dialog (both permission_prompt) it
+reads just "Claude needs your permission" in a terminal session, naming
+neither the tool nor the question, and "Claude needs your permission to use
+<tool>" in a session a host drives through the SDK, such as the VS Code
+extension. A fourth,
 notification.title_with_project, names the session's project in the title,
 which tells apart sessions running in different projects at once; it applies
 only to types that report on the session the hook runs in, so
@@ -146,9 +151,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # without an entry falls back to 'message'
         'messages': {},
         # Notification types whose text is Claude Code's own message from the
-        # hook input, for example the tool a permission prompt asks about;
-        # the configured title is kept, and an empty message falls back to
-        # the configured text
+        # hook input, for example the session that needs input; the
+        # configured title is kept, and an empty message falls back to the
+        # configured text
         'original_message_types': [],
         # idle_prompt text while background tasks are running (see
         # report_idle_background_tasks): 'one' for a single task and 'other'
